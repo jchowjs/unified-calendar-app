@@ -37,8 +37,9 @@ This is a single-user personal finance tool, not a multi-tenant product.
   naturally relational (distinct holding/cash records the user edits
   individually) and Postgres integrates natively with Vercel.
 - **Financial Modeling Prep (FMP)** REST API for live pricing (stocks, ETFs,
-  crypto, mutual funds). Called only from server-side code (Server
-  Components / Server Actions) so the API key never reaches the browser.
+  crypto, mutual funds, commodity/gold spot price). Called only from
+  server-side code (Server Components / Server Actions) so the API key
+  never reaches the browser.
 
 ## Data Model
 
