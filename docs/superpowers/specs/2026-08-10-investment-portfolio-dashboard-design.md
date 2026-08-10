@@ -65,8 +65,14 @@ cash_entries
   updated_at    timestamptz
 
 cpf_balances                          -- singleton row: exactly one OA and
-  id            uuid primary key      -- one SA per person, not a freeform
-  oa_amount     numeric               -- list like cash_entries
+  id            integer primary key   -- one SA per person, not a freeform
+                                       -- list like cash_entries. The init
+                                       -- SQL script inserts the single row
+                                       -- (id=1, oa_amount=0, sa_amount=0)
+                                       -- up front, so updateCpfBalances is
+                                       -- always a plain UPDATE ... WHERE
+                                       -- id=1, never an upsert/insert.
+  oa_amount     numeric
   sa_amount     numeric
   updated_at    timestamptz
 
@@ -118,6 +124,19 @@ Notes:
   request — Medisave (MA) and Retirement Account (RA) are out of scope but
   would be a straightforward two-column addition to this same table later
   if needed.
+- CPF balances are always SGD-denominated (not user-selectable), unlike
+  holdings/cash which the user chooses to enter in the home currency.
+  **This deployment therefore requires `HOME_CURRENCY=SGD`** for the CPF
+  section to be summed correctly into net worth/allocation — the same
+  silent-wrong-totals risk called out above for mismatched holding
+  currencies applies here, except the user can't simply avoid entering
+  CPF the way they can avoid entering a foreign-currency holding. If a
+  future deployment ever used a non-SGD home currency, the CPF section
+  would need to be hidden/disabled rather than summed in as-is. This
+  interacts with the crypto live-pricing rule below: with
+  `HOME_CURRENCY=SGD`, crypto holdings will always use `manual_value`
+  (that rule requires `HOME_CURRENCY=USD` to live-price) — expected and
+  already handled by that rule, not a new conflict.
 
 ## Pages & Components
 
@@ -145,8 +164,9 @@ itself.
 - `login`, `logout`
 - `addHolding`, `updateHolding`, `deleteHolding`
 - `addCash`, `updateCash`, `deleteCash`
-- `updateCpfBalances(oa_amount, sa_amount)` — upserts the singleton
-  `cpf_balances` row; no add/delete since OA and SA always exist.
+- `updateCpfBalances(oa_amount, sa_amount)` — updates the pre-seeded
+  singleton `cpf_balances` row (id=1, see Data Model notes); no add/delete
+  since OA and SA always exist, and no upsert/insert path is needed.
 - `refreshPrices`
 
 All mutating actions validate input server-side: holding quantity must be
