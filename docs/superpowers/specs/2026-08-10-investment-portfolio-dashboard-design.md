@@ -48,7 +48,11 @@ holdings
   name          text
   quantity      numeric
   cost_basis    numeric, nullable     -- total cost, for gain/loss; optional
-  manual_value  numeric, nullable     -- current value for bonds (no live price)
+  manual_value  numeric, nullable     -- current value when not live-priced:
+                                      -- always for bonds; also for
+                                      -- crypto/mutual funds when FMP
+                                      -- support/currency doesn't cover them
+                                      -- (see Data Flow)
   created_at    timestamptz
   updated_at    timestamptz
 
@@ -80,6 +84,12 @@ Notes:
 - `price_cache` is keyed on `(type, ticker)` using FMP's canonical symbol
   for that type (not necessarily what the user typed) to avoid collisions
   between differently-typed instruments that share a raw symbol string.
+  Canonicalization happens once, at add-time: `addHolding` looks up the
+  user's input against FMP's symbol search for the given type and stores
+  the resolved canonical symbol directly in `holdings.ticker` (rejecting
+  the input with a field error if no match is found). Because of this,
+  `holdings.ticker` and `price_cache.ticker` are always already in the same
+  canonical form — no separate translation step is needed at fetch time.
 - Bonds are the one holding type without live pricing: individual bonds
   don't have a simple ticker/live-price API via FMP, so bond holdings store
   a `manual_value` the user updates themselves. Bond *ETFs* are just regular
@@ -114,7 +124,16 @@ itself.
 - `refreshPrices`
 
 All mutating actions validate input server-side: quantity must be positive,
-ticker is required for non-bond types, amounts must be numeric.
+amounts must be numeric, and ticker vs. manual_value requirements depend on
+type and resolution:
+- `stock`/`etf`: ticker required (resolved via FMP symbol search, see Data
+  Model notes); no manual_value.
+- `bond`: manual_value required; no ticker.
+- `crypto`/`mutual_fund`: ticker required (resolved the same way as
+  stock/etf). If canonicalization succeeds but the type isn't live-priced
+  in this deployment (non-USD home currency for crypto, or FMP plan lacks
+  mutual fund access), manual_value is also required as the fallback
+  value, and the UI should prompt for it in that case.
 
 ## Data Flow — Pricing
 
@@ -123,7 +142,12 @@ different symbol formats and update cadences — they are not one uniform
 "batch fetch":
 - **Stocks/ETFs**: FMP quote endpoint, standard ticker (e.g. `AAPL`).
 - **Crypto**: FMP quote endpoint with a pair suffix (e.g. `BTCUSD`), not
-  the bare asset symbol.
+  the bare asset symbol. FMP crypto pairs are quoted against USD. The user
+  types the bare asset symbol (e.g. `BTC`); `addHolding` derives the pair
+  by appending `USD`. This only resolves to a live price when
+  `HOME_CURRENCY=USD` (consistent with the home-currency-only constraint
+  above) — for any other home currency, crypto holdings use `manual_value`
+  instead, same as bonds.
 - **Mutual funds**: NAV updates once per trading day (not intraday), so
   these are refreshed on a daily-staleness check rather than the 5-minute
   window below — no point re-fetching a value that hasn't changed.
