@@ -1,0 +1,217 @@
+import { canonicalizeCryptoSymbol, canonicalizeViaSymbolSearch } from "./canonicalize";
+import { fetchQuotePrice } from "./fmp";
+import {
+  GOLD_TICKER,
+  isFixedQuantityOne,
+  isSrsEligible,
+  type HoldingAccount,
+  type HoldingType,
+} from "./holdings-rules";
+
+export interface HoldingInput {
+  type: HoldingType;
+  ticker?: string;
+  name?: string;
+  quantity?: string;
+  costBasis?: string;
+  manualValue?: string;
+  account?: string;
+}
+
+export interface ResolvedHolding {
+  type: HoldingType;
+  account: HoldingAccount;
+  ticker: string | null;
+  name: string;
+  quantity: number;
+  costBasis: number | null;
+  manualValue: number | null;
+}
+
+export type ValidationResult =
+  | { ok: true; data: ResolvedHolding }
+  | { ok: false; error: string };
+
+function parsePositiveNumber(raw: string | undefined, field: string): number | { error: string } {
+  if (raw === undefined || raw.trim() === "") return { error: `${field} is required.` };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return { error: `${field} must be a positive number.` };
+  return n;
+}
+
+function parseOptionalNonNegativeNumber(raw: string | undefined): number | null | { error: string } {
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return { error: "Must be a non-negative number." };
+  return n;
+}
+
+export async function resolveHoldingInput(
+  input: HoldingInput,
+  homeCurrency: string
+): Promise<ValidationResult> {
+  const account: HoldingAccount =
+    isSrsEligible(input.type) && input.account === "srs" ? "srs" : "brokerage";
+
+  const costBasis = parseOptionalNonNegativeNumber(input.costBasis);
+  if (typeof costBasis === "object" && costBasis !== null) {
+    return { ok: false, error: `Cost basis: ${costBasis.error}` };
+  }
+
+  const manualValueInput = parseOptionalNonNegativeNumber(input.manualValue);
+  if (typeof manualValueInput === "object" && manualValueInput !== null) {
+    return { ok: false, error: `Value: ${manualValueInput.error}` };
+  }
+
+  switch (input.type) {
+    case "bond":
+    case "insurance_policy":
+    case "endowus": {
+      if (manualValueInput === null) {
+        return { ok: false, error: "Value is required for this holding type." };
+      }
+      const quantity = isFixedQuantityOne(input.type) ? 1 : parsePositiveNumber(input.quantity, "Quantity");
+      if (typeof quantity === "object") return { ok: false, error: quantity.error };
+      return {
+        ok: true,
+        data: {
+          type: input.type,
+          account,
+          ticker: null,
+          name: (input.name ?? "").trim() || defaultName(input.type),
+          quantity,
+          costBasis,
+          manualValue: manualValueInput,
+        },
+      };
+    }
+
+    case "stock":
+    case "etf":
+    case "mutual_fund": {
+      const quantity = parsePositiveNumber(input.quantity, "Quantity");
+      if (typeof quantity === "object") return { ok: false, error: quantity.error };
+
+      const resolved = await canonicalizeViaSymbolSearch(input.ticker ?? "");
+      if (resolved.status === "not_found") {
+        return { ok: false, error: "Ticker not found." };
+      }
+      if (resolved.status === "search_unavailable") {
+        return {
+          ok: false,
+          error: "Couldn't verify this ticker right now (lookup failed) — try again shortly.",
+        };
+      }
+
+      const manualValue = manualValueInput;
+      if (input.type === "mutual_fund" && manualValue === null) {
+        // Best-effort: if FMP can't quote it right now (invalid plan
+        // tier or otherwise), require a manual fallback rather than
+        // silently leaving the holding unpriced.
+        const price = await fetchQuotePrice(resolved.ticker);
+        if (price === null) {
+          return {
+            ok: false,
+            error:
+              "Couldn't fetch a live price for this fund — enter its current value manually to continue.",
+          };
+        }
+      }
+
+      return {
+        ok: true,
+        data: {
+          type: input.type,
+          account,
+          ticker: resolved.ticker,
+          name: (input.name ?? "").trim() || resolved.name,
+          quantity,
+          costBasis,
+          manualValue,
+        },
+      };
+    }
+
+    case "crypto": {
+      const quantity = parsePositiveNumber(input.quantity, "Quantity");
+      if (typeof quantity === "object") return { ok: false, error: quantity.error };
+
+      const resolved = await canonicalizeCryptoSymbol(input.ticker ?? "", homeCurrency);
+      if (!resolved) {
+        return { ok: false, error: "Enter a valid crypto symbol (letters/numbers only)." };
+      }
+
+      const manualValue = manualValueInput;
+      if (!resolved.liveQuoteConfirmed && manualValue === null) {
+        return {
+          ok: false,
+          error:
+            homeCurrency === "USD"
+              ? "Couldn't fetch a live price for this symbol — enter its current value manually to continue."
+              : "This deployment's home currency isn't USD, so crypto can't be live-priced — enter its current value manually.",
+        };
+      }
+
+      return {
+        ok: true,
+        data: {
+          type: "crypto",
+          account: "brokerage",
+          ticker: resolved.ticker,
+          name: (input.name ?? "").trim() || resolved.name,
+          quantity,
+          costBasis,
+          manualValue,
+        },
+      };
+    }
+
+    case "gold": {
+      const quantity = parsePositiveNumber(input.quantity, "Quantity (grams)");
+      if (typeof quantity === "object") return { ok: false, error: quantity.error };
+
+      const manualValue = manualValueInput;
+      let liveQuoteConfirmed = false;
+      if (homeCurrency === "USD") {
+        liveQuoteConfirmed = (await fetchQuotePrice(GOLD_TICKER)) !== null;
+      }
+      if (!liveQuoteConfirmed && manualValue === null) {
+        return {
+          ok: false,
+          error:
+            homeCurrency === "USD"
+              ? "Couldn't fetch a live gold price — enter its current value manually to continue."
+              : "This deployment's home currency isn't USD, so gold can't be live-priced — enter its current value manually.",
+        };
+      }
+
+      return {
+        ok: true,
+        data: {
+          type: "gold",
+          account: "brokerage",
+          ticker: GOLD_TICKER,
+          name: (input.name ?? "").trim() || "Gold",
+          quantity,
+          costBasis,
+          manualValue,
+        },
+      };
+    }
+  }
+
+  return { ok: false, error: "Unknown holding type." };
+}
+
+function defaultName(type: HoldingType): string {
+  switch (type) {
+    case "insurance_policy":
+      return "Insurance policy";
+    case "endowus":
+      return "Endowus portfolio";
+    case "bond":
+      return "Bond";
+    default:
+      return type;
+  }
+}
