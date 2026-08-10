@@ -81,15 +81,20 @@ Notes:
   would silently produce wrong totals. The add-holding form should
   make this constraint visible to the user (e.g. a note or a currency
   field defaulted to and locked at the home currency).
-- `price_cache` is keyed on `(type, ticker)` using FMP's canonical symbol
-  for that type (not necessarily what the user typed) to avoid collisions
-  between differently-typed instruments that share a raw symbol string.
-  Canonicalization happens once, at add-time: `addHolding` looks up the
-  user's input against FMP's symbol search for the given type and stores
-  the resolved canonical symbol directly in `holdings.ticker` (rejecting
-  the input with a field error if no match is found). Because of this,
-  `holdings.ticker` and `price_cache.ticker` are always already in the same
-  canonical form — no separate translation step is needed at fetch time.
+- `price_cache` is keyed on `(type, ticker)`, and `holdings.ticker` always
+  already matches that canonical form — canonicalization happens once, at
+  add-time, so no translation step is needed at fetch time. The mechanism
+  differs by type:
+  - `stock`/`etf`/`mutual_fund`: `addHolding` looks up the user's input
+    against FMP's symbol search and stores the resolved canonical symbol
+    (rejecting the input with a field error if no match is found).
+  - `crypto`: there is no generic symbol-search lookup. `addHolding`
+    uppercases the user's bare asset symbol (e.g. `btc` → `BTC`) and
+    validates it against FMP's known crypto symbols; that bare symbol —
+    never the `USD`-suffixed pair — is what's stored in `holdings.ticker`
+    and used as the `price_cache` key. The `USD` pair suffix (e.g.
+    `BTCUSD`) is a fetch-time-only detail of constructing the FMP request
+    (see Data Flow) and is never itself stored.
 - Bonds are the one holding type without live pricing: individual bonds
   don't have a simple ticker/live-price API via FMP, so bond holdings store
   a `manual_value` the user updates themselves. Bond *ETFs* are just regular
@@ -129,11 +134,14 @@ type and resolution:
 - `stock`/`etf`: ticker required (resolved via FMP symbol search, see Data
   Model notes); no manual_value.
 - `bond`: manual_value required; no ticker.
-- `crypto`/`mutual_fund`: ticker required (resolved the same way as
-  stock/etf). If canonicalization succeeds but the type isn't live-priced
-  in this deployment (non-USD home currency for crypto, or FMP plan lacks
-  mutual fund access), manual_value is also required as the fallback
-  value, and the UI should prompt for it in that case.
+- `mutual_fund`: ticker required (resolved via FMP symbol search, same as
+  stock/etf). If the FMP plan lacks mutual fund access, manual_value is
+  also required as the fallback value, and the UI should prompt for it in
+  that case.
+- `crypto`: ticker required (bare symbol, validated as described in Data
+  Model notes). If `HOME_CURRENCY` isn't `USD`, manual_value is also
+  required as the fallback value, and the UI should prompt for it in that
+  case.
 
 ## Data Flow — Pricing
 
@@ -143,11 +151,12 @@ different symbol formats and update cadences — they are not one uniform
 - **Stocks/ETFs**: FMP quote endpoint, standard ticker (e.g. `AAPL`).
 - **Crypto**: FMP quote endpoint with a pair suffix (e.g. `BTCUSD`), not
   the bare asset symbol. FMP crypto pairs are quoted against USD. The user
-  types the bare asset symbol (e.g. `BTC`); `addHolding` derives the pair
-  by appending `USD`. This only resolves to a live price when
-  `HOME_CURRENCY=USD` (consistent with the home-currency-only constraint
-  above) — for any other home currency, crypto holdings use `manual_value`
-  instead, same as bonds.
+  types and `addHolding` stores the bare asset symbol (e.g. `BTC`); the
+  `USD` suffix is appended only when constructing the FMP request at fetch
+  time (step 2 below), never stored. This only resolves to a live price
+  when `HOME_CURRENCY=USD` (consistent with the home-currency-only
+  constraint above) — for any other home currency, crypto holdings use
+  `manual_value` instead, same as bonds.
 - **Mutual funds**: NAV updates once per trading day (not intraday), so
   these are refreshed on a daily-staleness check rather than the 5-minute
   window below — no point re-fetching a value that hasn't changed.
@@ -155,17 +164,22 @@ different symbol formats and update cadences — they are not one uniform
   crypto and mutual fund quote access before relying on it; if it doesn't,
   those two types fall back to `manual_value` like bonds until upgraded.
 
-On dashboard load:
+On dashboard load, each holding is classified as either **live-priced** or
+**manual** (this classification is fixed at add-time by whether
+`manual_value` is set — see Server Actions):
 1. Read all holdings from Postgres.
-2. For each distinct (type, ticker) among stock/etf/crypto holdings, check
-   `price_cache`. If stale (older than 5 minutes), fetch fresh quotes from
-   FMP and update the cache. Mutual fund holdings use the same cache keyed
-   by `(mutual_fund, ticker)` but with a 24-hour staleness window instead.
-3. Bonds (and any type without confirmed FMP plan support) skip this
-   entirely and use `manual_value` directly.
-4. Compute market value per holding (`quantity * price`, or `manual_value`
-   for bonds) and aggregate totals (net worth, allocation, gain/loss where
-   cost_basis is present).
+2. For live-priced holdings — `stock`/`etf` always; `crypto` only when
+   `HOME_CURRENCY=USD`; `mutual_fund` only when the FMP plan supports it —
+   check `price_cache` for each distinct (type, ticker). If stale, fetch
+   fresh quotes from FMP (appending the `USD` pair suffix for crypto
+   requests only, per Data Model notes) and update the cache. Staleness
+   window is 5 minutes for stock/etf/crypto, 24 hours for mutual_fund.
+3. Manual holdings — bonds always, plus any crypto/mutual_fund holding that
+   didn't qualify as live-priced above — skip step 2 entirely.
+4. Compute market value per holding: `quantity * price` for live-priced
+   holdings; `manual_value` directly (as the holding's total current value,
+   not multiplied by quantity) for manual holdings. Aggregate into totals
+   (net worth, allocation, gain/loss where cost_basis is present).
 
 ## Error Handling
 
