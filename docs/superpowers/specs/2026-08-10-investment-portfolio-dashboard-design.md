@@ -4,9 +4,10 @@
 
 A personal web dashboard that shows the current status of the user's
 investments and cash. The user manually enters what they hold (quantities of
-stocks/ETFs/crypto/mutual funds, plus bonds and cash balances); the app fetches
-live pricing where possible and computes market values, gain/loss, allocation,
-and total net worth.
+stocks/ETFs/crypto/mutual funds, plus bonds, cash balances, and CPF Ordinary
+Account/Special Account balances); the app fetches live pricing where
+possible and computes market values, gain/loss, allocation, and total net
+worth.
 
 This is a single-user personal finance tool, not a multi-tenant product.
 
@@ -63,6 +64,12 @@ cash_entries
   created_at    timestamptz
   updated_at    timestamptz
 
+cpf_balances                          -- singleton row: exactly one OA and
+  id            uuid primary key      -- one SA per person, not a freeform
+  oa_amount     numeric               -- list like cash_entries
+  sa_amount     numeric
+  updated_at    timestamptz
+
 price_cache
   type          enum('stock','etf','crypto','mutual_fund')  -- part of composite key
   ticker        text                                        -- FMP-canonical symbol
@@ -101,6 +108,16 @@ Notes:
   ETFs (ticker + live price) and are unaffected by this.
 - No migration framework — a single SQL init script (run once against the
   Vercel Postgres instance) is sufficient at this scale.
+- CPF (Singapore Central Provident Fund) OA/SA balances are tracked
+  separately from bank cash, since they're locked-up retirement savings,
+  not freely spendable — they get their own line in the dashboard summary
+  and allocation breakdown rather than being folded into "Cash". They're
+  modeled as a singleton row (not a list like `cash_entries`) because each
+  person has exactly one OA and one SA, updated in place via a single
+  `updateCpfBalances` action. v1 covers only OA and SA, per the user's
+  request — Medisave (MA) and Retirement Account (RA) are out of scope but
+  would be a straightforward two-column addition to this same table later
+  if needed.
 
 ## Pages & Components
 
@@ -108,12 +125,14 @@ Notes:
   to `/`.
 - `/` (dashboard, auth-required) —
   - Summary cards: total net worth, total invested value, total cash, total
-    gain/loss.
+    CPF (OA + SA), total gain/loss.
   - Allocation breakdown by asset type (stocks/ETFs/crypto/mutual
-    funds/bonds/cash).
+    funds/bonds/cash/CPF).
   - Holdings table: type, ticker/name, quantity, current price, market
     value, gain/loss (when cost_basis is set). Inline add/edit/delete.
   - Cash list: label, amount, inline add/edit/delete.
+  - CPF section: two fields, OA and SA balances, edited in place (no
+    add/delete — see Data Model notes).
   - Manual "Refresh prices" action in addition to automatic staleness-based
     refresh.
 
@@ -126,11 +145,14 @@ itself.
 - `login`, `logout`
 - `addHolding`, `updateHolding`, `deleteHolding`
 - `addCash`, `updateCash`, `deleteCash`
+- `updateCpfBalances(oa_amount, sa_amount)` — upserts the singleton
+  `cpf_balances` row; no add/delete since OA and SA always exist.
 - `refreshPrices`
 
-All mutating actions validate input server-side: quantity must be positive,
-amounts must be numeric, and ticker vs. manual_value requirements depend on
-type and resolution:
+All mutating actions validate input server-side: holding quantity must be
+positive; cash and CPF (OA/SA) amounts must be numeric and non-negative
+(zero is valid, negative is not); and ticker vs. manual_value requirements
+for holdings depend on type and resolution:
 - `stock`/`etf`: ticker required (resolved via FMP symbol search, see Data
   Model notes); no manual_value.
 - `bond`: manual_value required; no ticker.
@@ -198,12 +220,15 @@ Manual verification after build (via the `run` skill / local dev server,
 then again after Vercel deploy):
 - Log in with the shared password; confirm unauthenticated requests to `/`
   redirect to `/login`.
-- Add one holding of each type (stock, ETF, crypto, mutual fund, bond) and
-  one cash entry; confirm correct live prices, market values, and totals.
+- Add one holding of each type (stock, ETF, crypto, mutual fund, bond), one
+  cash entry, and set OA/SA CPF balances; confirm correct live prices,
+  market values, and totals, and that CPF appears as its own line (not
+  folded into cash).
 - Confirm price cache staleness/refresh behavior (manual refresh and
   automatic re-fetch after 5 minutes).
 - Confirm graceful handling of an invalid ticker.
-- Edit and delete a holding and a cash entry; confirm totals update.
+- Edit and delete a holding and a cash entry; edit CPF OA/SA balances;
+  confirm totals update.
 - Log out via the `logout` action and confirm the cookie is cleared and
   `/` redirects back to `/login`.
 - Confirm mutual fund prices refresh on a daily cadence rather than every
@@ -218,3 +243,5 @@ then again after Vercel deploy):
 - Automatic position sync from a broker (e.g. IBKR) — holdings are entered
   manually, by design.
 - Transaction history / tax lot tracking beyond a single cost_basis figure.
+- CPF Medisave (MA) and Retirement Account (RA) — only OA and SA are
+  tracked in v1, per the user's request.
