@@ -5,9 +5,10 @@
 A personal web dashboard that shows the current status of the user's
 investments and cash. The user manually enters what they hold (quantities of
 stocks/ETFs/crypto/mutual funds — including SRS-held ETFs — plus bonds,
-insurance savings policies, cash balances, and CPF Ordinary Account/Special
-Account balances); the app fetches live pricing where possible and computes
-market values, gain/loss, allocation, and total net worth.
+insurance savings policies, physical/savings-account gold, Endowus portfolio
+investments, cash balances, and CPF Ordinary Account/Special Account
+balances); the app fetches live pricing where possible and computes market
+values, gain/loss, allocation, and total net worth.
 
 This is a single-user personal finance tool, not a multi-tenant product.
 
@@ -45,20 +46,23 @@ This is a single-user personal finance tool, not a multi-tenant product.
 holdings
   id            uuid primary key
   type          enum('stock','etf','crypto','mutual_fund','bond',
-                      'insurance_policy')
+                      'insurance_policy','gold','endowus')
   account       enum('brokerage','srs')   -- default 'brokerage'; see notes
-  ticker        text, nullable            -- null for bond/insurance_policy
+  ticker        text, nullable            -- null for bond/insurance_policy/
+                                           -- endowus; fixed constant for gold
   name          text
-  quantity      numeric                   -- 1 for insurance_policy (see notes)
+  quantity      numeric                   -- grams for gold; 1 for
+                                           -- insurance_policy/endowus (see
+                                           -- notes)
   cost_basis    numeric, nullable     -- total cost, for gain/loss; optional
                                       -- for most types, but recommended for
-                                      -- insurance_policy (total premiums
-                                      -- paid to date)
+                                      -- insurance_policy/endowus (total
+                                      -- premiums/amount invested to date)
   manual_value  numeric, nullable     -- current value when not live-priced:
-                                      -- always for bond/insurance_policy;
-                                      -- also for crypto/mutual funds when
-                                      -- FMP support/currency doesn't cover
-                                      -- them (see Data Flow)
+                                      -- always for bond/insurance_policy/
+                                      -- endowus; also for crypto/mutual
+                                      -- funds/gold when FMP support/currency
+                                      -- doesn't cover them (see Data Flow)
   created_at    timestamptz
   updated_at    timestamptz
 
@@ -82,7 +86,7 @@ cpf_balances                          -- singleton row: exactly one OA and
   updated_at    timestamptz
 
 price_cache
-  type          enum('stock','etf','crypto','mutual_fund')  -- part of composite key
+  type          enum('stock','etf','crypto','mutual_fund','gold')  -- part of composite key
   ticker        text                                        -- FMP-canonical symbol
   price         numeric
   fetched_at    timestamptz
@@ -125,19 +129,46 @@ Notes:
   same mechanism as a brokerage-held ETF with the same ticker (the field
   only affects how holdings are grouped/labeled for display — see Pages &
   Components). `account` doesn't apply to CPF (its own table) or cash.
-  `account` is only user-settable for `stock`/`etf`/`mutual_fund` — the
-  types SRS funds can actually be invested in. `bond`, `crypto`, and
-  `insurance_policy` are always forced to `brokerage` server-side (not
-  exposed as a choice in their add forms), since SRS in practice isn't
-  used to hold these here; this can be revisited if that changes.
+  `account` is only user-settable for `stock`/`etf`/`mutual_fund`/`endowus`
+  — the types SRS funds can actually be invested in (including via an
+  Endowus SRS portfolio). `bond`, `crypto`, `insurance_policy`, and `gold`
+  are always forced to `brokerage` server-side (not exposed as a choice in
+  their add forms), since SRS in practice isn't used to hold these here;
+  this can be revisited if that changes.
 - `insurance_policy` (e.g. an endowment or whole-life savings plan bought
-  through an insurer) is the other manual-value holding type: it has no
-  ticker or market price at all, only a surrender/cash value the user
-  updates whenever they get a statement from the insurer, stored in
-  `manual_value`. Unlike bonds, `cost_basis` (total premiums paid to date)
-  is expected to be set for these so gain/loss is meaningful. `quantity`
-  is fixed at `1` for this type — a policy isn't a per-unit holding, and
+  through an insurer) is a manual-value holding type: it has no ticker or
+  market price at all, only a surrender/cash value the user updates
+  whenever they get a statement from the insurer, stored in `manual_value`.
+  Unlike bonds, `cost_basis` (total premiums paid to date) is expected to
+  be set for these so gain/loss is meaningful. `quantity` is fixed at `1`
+  for this type — a policy isn't a per-unit holding, and
   `manual_value`/`cost_basis` already represent the whole policy.
+- `endowus` (an Endowus robo-advisor portfolio) is modeled the same way as
+  `insurance_policy`: no ticker, `manual_value` is the single blended
+  portfolio value shown in the Endowus app/statement, `cost_basis` is the
+  total amount invested to date, and `quantity` is fixed at `1`. v1
+  deliberately does not break an Endowus portfolio into its individual
+  underlying unit trusts — those aren't tracked as separate holdings, per
+  the user's choice for simplicity, since Endowus itself only surfaces one
+  blended value in normal use. `account` for `endowus` follows the same
+  rule as `stock`/`etf`/`mutual_fund` (optional, defaults to `brokerage`,
+  settable to `srs`), since Endowus supports investing SRS funds.
+- `gold` covers physical gold (bars/coins) and gold savings/passbook
+  accounts (no ticker of their own — priced by weight against the spot
+  gold price). `quantity` is in **grams** (v1's fixed unit — no per-holding
+  unit selector). Unlike bond/insurance_policy/endowus, gold attempts live
+  pricing the same way crypto does: `ticker` is fixed internally to the
+  constant `XAUUSD` (not user-entered) and used as the `price_cache` key
+  when live-priced. This only resolves to a live price when
+  `HOME_CURRENCY=USD` AND the FMP plan includes commodity/spot gold quote
+  access (identical condition shape to crypto, and for the same
+  currency-mismatch reason — FMP quotes gold in USD per troy ounce) —
+  otherwise gold falls back to `manual_value` (the holding's total current
+  value, entered by the user from a spot price they look up themselves),
+  same as bonds. Given this deployment requires `HOME_CURRENCY=SGD` (see
+  CPF note below), gold will in practice always use `manual_value` here,
+  same as crypto — this is expected, not a bug. See Data Flow for the
+  live-price gram/troy-ounce conversion.
 - No migration framework — a single SQL init script (run once against the
   Vercel Postgres instance) is sufficient at this scale.
 - CPF (Singapore Central Provident Fund) OA/SA balances are tracked
@@ -172,10 +203,10 @@ Notes:
   - Summary cards: total net worth, total invested value, total cash, total
     CPF (OA + SA), total SRS, total gain/loss.
   - Allocation breakdown by asset type (stocks/ETFs/crypto/mutual
-    funds/bonds/insurance policies/cash/CPF), plus a separate SRS-vs-
-    brokerage breakdown within invested holdings (an SRS-held ETF counts
-    toward both its asset-type slice and the SRS total — these are two
-    different cuts of the same holdings, not mutually exclusive
+    funds/bonds/insurance policies/gold/Endowus/cash/CPF), plus a separate
+    SRS-vs-brokerage breakdown within invested holdings (an SRS-held ETF
+    counts toward both its asset-type slice and the SRS total — these are
+    two different cuts of the same holdings, not mutually exclusive
     categories).
   - Holdings table: type, account (brokerage/SRS), ticker/name, quantity,
     current price, market value, gain/loss (when cost_basis is set).
@@ -224,12 +255,22 @@ for holdings depend on type and resolution:
   server-side (not user-settable); cost_basis strongly recommended (UI
   should prompt for it) but not hard-required, consistent with other types
   where cost_basis is optional.
+- `endowus`: manual_value required; no ticker; quantity is fixed at `1`
+  server-side (not user-editable); `account` optional, defaults to
+  `brokerage` (set to `srs` for an Endowus SRS portfolio); cost_basis
+  strongly recommended (UI should prompt for it) but not hard-required.
+- `gold`: quantity required (grams, positive); ticker not user-set (fixed
+  internally to `XAUUSD`); `account` forced to `brokerage` server-side
+  (not user-settable). If `HOME_CURRENCY` isn't `USD`, OR the FMP plan
+  lacks commodity/gold quote access, manual_value is also required as the
+  fallback value (representing the holding's total current value, not a
+  per-gram price), and the UI should prompt for it in that case.
 
 ## Data Flow — Pricing
 
-Stocks, ETFs, crypto, and mutual funds are different FMP endpoints with
-different symbol formats and update cadences — they are not one uniform
-"batch fetch":
+Stocks, ETFs, crypto, mutual funds, and gold are different FMP endpoints
+with different symbol formats and update cadences — they are not one
+uniform "batch fetch":
 - **Stocks/ETFs**: FMP quote endpoint, standard ticker (e.g. `AAPL`).
 - **Crypto**: FMP quote endpoint with a pair suffix (e.g. `BTCUSD`), not
   the bare asset symbol. FMP crypto pairs are quoted against USD. The user
@@ -242,28 +283,37 @@ different symbol formats and update cadences — they are not one uniform
 - **Mutual funds**: NAV updates once per trading day (not intraday), so
   these are refreshed on a daily-staleness check rather than the 5-minute
   window below — no point re-fetching a value that hasn't changed.
+- **Gold**: FMP commodity/spot price endpoint, fixed symbol `XAUUSD`,
+  quoted in USD per troy ounce. Live market value is
+  `(quantity_grams / 31.1034768) * price_per_troy_oz` — same
+  `HOME_CURRENCY=USD`-required condition as crypto, and for the same
+  reason (the quote is USD-denominated). Otherwise gold uses `manual_value`
+  instead, same as bonds.
 - Implementation must confirm the FMP plan/tier in use actually includes
-  crypto and mutual fund quote access before relying on it; if it doesn't,
-  those two types fall back to `manual_value` like bonds until upgraded.
+  crypto, mutual fund, and commodity/gold quote access before relying on
+  each; if it doesn't, those types fall back to `manual_value` like bonds
+  until upgraded.
 
 On dashboard load, each holding is classified as either **live-priced** or
 **manual** (this classification is fixed at add-time by whether
 `manual_value` is set — see Server Actions):
 1. Read all holdings from Postgres.
-2. For live-priced holdings — `stock`/`etf` always; `crypto` only when
-   `HOME_CURRENCY=USD` and the FMP plan supports it; `mutual_fund` only
-   when the FMP plan supports it —
+2. For live-priced holdings — `stock`/`etf` always; `crypto`/`gold` only
+   when `HOME_CURRENCY=USD` and the FMP plan supports that type;
+   `mutual_fund` only when the FMP plan supports it —
    check `price_cache` for each distinct (type, ticker). If stale, fetch
    fresh quotes from FMP (appending the `USD` pair suffix for crypto
    requests only, per Data Model notes) and update the cache. Staleness
-   window is 5 minutes for stock/etf/crypto, 24 hours for mutual_fund.
-3. Manual holdings — bonds and insurance_policy holdings always, plus any
-   crypto/mutual_fund holding that didn't qualify as live-priced above —
-   skip step 2 entirely.
-4. Compute market value per holding: `quantity * price` for live-priced
-   holdings; `manual_value` directly (as the holding's total current value,
-   not multiplied by quantity) for manual holdings. Aggregate into totals
-   (net worth, allocation, gain/loss where cost_basis is present).
+   window is 5 minutes for stock/etf/crypto/gold, 24 hours for
+   mutual_fund.
+3. Manual holdings — bond, insurance_policy, and endowus holdings always,
+   plus any crypto/mutual_fund/gold holding that didn't qualify as
+   live-priced above — skip step 2 entirely.
+4. Compute market value per holding: for live-priced holdings, `quantity *
+   price` (or the gram/troy-ounce conversion above for gold); for manual
+   holdings, `manual_value` directly (as the holding's total current
+   value, not multiplied by quantity). Aggregate into totals (net worth,
+   allocation, gain/loss where cost_basis is present).
 
 ## Error Handling
 
@@ -282,14 +332,19 @@ then again after Vercel deploy):
 - Log in with the shared password; confirm unauthenticated requests to `/`
   redirect to `/login`.
 - Add one holding of each type (stock, ETF, crypto, mutual fund, bond,
-  insurance policy), one cash entry, and set OA/SA CPF balances; confirm
-  correct live prices, market values, and totals, and that CPF appears as
-  its own line (not folded into cash).
+  insurance policy, gold, Endowus), one cash entry, and set OA/SA CPF
+  balances; confirm correct live prices, market values, and totals, and
+  that CPF appears as its own line (not folded into cash).
 - Add an ETF holding with `account=srs`; confirm it's live-priced
   identically to a brokerage-held ETF with the same ticker, but is broken
-  out separately in the SRS total.
-- Add an insurance policy with a manual_value and cost_basis; confirm
-  gain/loss displays correctly and quantity is fixed at 1.
+  out separately in the SRS total. Repeat for an `endowus` holding with
+  `account=srs`.
+- Add an insurance policy and an Endowus holding, each with a manual_value
+  and cost_basis; confirm gain/loss displays correctly and quantity is
+  fixed at 1 for both.
+- Add a gold holding with a quantity in grams and manual_value (expected
+  given `HOME_CURRENCY=SGD`); confirm the market value used is
+  manual_value directly, not multiplied by the gram quantity.
 - Confirm price cache staleness/refresh behavior (manual refresh and
   automatic re-fetch after 5 minutes).
 - Confirm graceful handling of an invalid ticker.
@@ -317,3 +372,8 @@ then again after Vercel deploy):
 - Insurance policy projections — guaranteed vs. non-guaranteed maturity
   value breakdowns, projected future value, or premium payment schedules.
   v1 only tracks current surrender value and premiums paid to date.
+- Breaking an Endowus portfolio into its individual underlying unit
+  trusts — v1 tracks one blended portfolio value only, per the user's
+  choice.
+- Gold in units other than grams (e.g. troy ounces as a user-facing unit),
+  and gold purity/karat tracking.
