@@ -125,6 +125,11 @@ Notes:
   same mechanism as a brokerage-held ETF with the same ticker (the field
   only affects how holdings are grouped/labeled for display — see Pages &
   Components). `account` doesn't apply to CPF (its own table) or cash.
+  `account` is only user-settable for `stock`/`etf`/`mutual_fund` — the
+  types SRS funds can actually be invested in. `bond`, `crypto`, and
+  `insurance_policy` are always forced to `brokerage` server-side (not
+  exposed as a choice in their add forms), since SRS in practice isn't
+  used to hold these here; this can be revisited if that changes.
 - `insurance_policy` (e.g. an endowment or whole-life savings plan bought
   through an insurer) is the other manual-value holding type: it has no
   ticker or market price at all, only a surrender/cash value the user
@@ -202,19 +207,23 @@ for holdings depend on type and resolution:
 - `stock`/`etf`: ticker required (resolved via FMP symbol search, see Data
   Model notes); no manual_value; `account` optional, defaults to
   `brokerage` (set to `srs` for SRS-held ETFs).
-- `bond`: manual_value required; no ticker.
+- `bond`: manual_value required; no ticker; `account` forced to
+  `brokerage` server-side (not user-settable — see Data Model notes).
 - `mutual_fund`: ticker required (resolved via FMP symbol search, same as
   stock/etf). If the FMP plan lacks mutual fund access, manual_value is
   also required as the fallback value, and the UI should prompt for it in
-  that case.
+  that case. `account` optional, defaults to `brokerage` (set to `srs` for
+  SRS-held unit trusts).
 - `crypto`: ticker required (bare symbol, validated as described in Data
   Model notes). If `HOME_CURRENCY` isn't `USD`, OR the FMP plan lacks
   crypto quote access, manual_value is also required as the fallback
-  value, and the UI should prompt for it in that case.
+  value, and the UI should prompt for it in that case. `account` forced to
+  `brokerage` server-side (not user-settable).
 - `insurance_policy`: manual_value required; no ticker; quantity is fixed
-  at `1` server-side (not user-editable); cost_basis strongly recommended
-  (UI should prompt for it) but not hard-required, consistent with other
-  types where cost_basis is optional.
+  at `1` server-side (not user-editable); `account` forced to `brokerage`
+  server-side (not user-settable); cost_basis strongly recommended (UI
+  should prompt for it) but not hard-required, consistent with other types
+  where cost_basis is optional.
 
 ## Data Flow — Pricing
 
