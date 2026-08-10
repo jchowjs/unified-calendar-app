@@ -4,10 +4,10 @@
 
 A personal web dashboard that shows the current status of the user's
 investments and cash. The user manually enters what they hold (quantities of
-stocks/ETFs/crypto/mutual funds, plus bonds, cash balances, and CPF Ordinary
-Account/Special Account balances); the app fetches live pricing where
-possible and computes market values, gain/loss, allocation, and total net
-worth.
+stocks/ETFs/crypto/mutual funds — including SRS-held ETFs — plus bonds,
+insurance savings policies, cash balances, and CPF Ordinary Account/Special
+Account balances); the app fetches live pricing where possible and computes
+market values, gain/loss, allocation, and total net worth.
 
 This is a single-user personal finance tool, not a multi-tenant product.
 
@@ -44,16 +44,21 @@ This is a single-user personal finance tool, not a multi-tenant product.
 ```
 holdings
   id            uuid primary key
-  type          enum('stock','etf','crypto','mutual_fund','bond')
-  ticker        text, nullable        -- null for bonds
+  type          enum('stock','etf','crypto','mutual_fund','bond',
+                      'insurance_policy')
+  account       enum('brokerage','srs')   -- default 'brokerage'; see notes
+  ticker        text, nullable            -- null for bond/insurance_policy
   name          text
-  quantity      numeric
+  quantity      numeric                   -- 1 for insurance_policy (see notes)
   cost_basis    numeric, nullable     -- total cost, for gain/loss; optional
+                                      -- for most types, but recommended for
+                                      -- insurance_policy (total premiums
+                                      -- paid to date)
   manual_value  numeric, nullable     -- current value when not live-priced:
-                                      -- always for bonds; also for
-                                      -- crypto/mutual funds when FMP
-                                      -- support/currency doesn't cover them
-                                      -- (see Data Flow)
+                                      -- always for bond/insurance_policy;
+                                      -- also for crypto/mutual funds when
+                                      -- FMP support/currency doesn't cover
+                                      -- them (see Data Flow)
   created_at    timestamptz
   updated_at    timestamptz
 
@@ -108,10 +113,26 @@ Notes:
     and used as the `price_cache` key. The `USD` pair suffix (e.g.
     `BTCUSD`) is a fetch-time-only detail of constructing the FMP request
     (see Data Flow) and is never itself stored.
-- Bonds are the one holding type without live pricing: individual bonds
-  don't have a simple ticker/live-price API via FMP, so bond holdings store
-  a `manual_value` the user updates themselves. Bond *ETFs* are just regular
+- Bonds are one of two holding types without live pricing (see
+  `insurance_policy` below for the other): individual bonds don't have a
+  simple ticker/live-price API via FMP, so bond holdings store a
+  `manual_value` the user updates themselves. Bond *ETFs* are just regular
   ETFs (ticker + live price) and are unaffected by this.
+- `account` distinguishes which wrapper a holding sits in — `brokerage`
+  (default, taxable/ordinary) vs `srs` (Supplementary Retirement Scheme,
+  tax-advantaged but withdrawal-restricted). It has no effect on pricing:
+  an SRS-held ETF is resolved, cached, and live-priced through the exact
+  same mechanism as a brokerage-held ETF with the same ticker (the field
+  only affects how holdings are grouped/labeled for display — see Pages &
+  Components). `account` doesn't apply to CPF (its own table) or cash.
+- `insurance_policy` (e.g. an endowment or whole-life savings plan bought
+  through an insurer) is the other manual-value holding type: it has no
+  ticker or market price at all, only a surrender/cash value the user
+  updates whenever they get a statement from the insurer, stored in
+  `manual_value`. Unlike bonds, `cost_basis` (total premiums paid to date)
+  is expected to be set for these so gain/loss is meaningful. `quantity`
+  is fixed at `1` for this type — a policy isn't a per-unit holding, and
+  `manual_value`/`cost_basis` already represent the whole policy.
 - No migration framework — a single SQL init script (run once against the
   Vercel Postgres instance) is sufficient at this scale.
 - CPF (Singapore Central Provident Fund) OA/SA balances are tracked
@@ -144,11 +165,16 @@ Notes:
   to `/`.
 - `/` (dashboard, auth-required) —
   - Summary cards: total net worth, total invested value, total cash, total
-    CPF (OA + SA), total gain/loss.
+    CPF (OA + SA), total SRS, total gain/loss.
   - Allocation breakdown by asset type (stocks/ETFs/crypto/mutual
-    funds/bonds/cash/CPF).
-  - Holdings table: type, ticker/name, quantity, current price, market
-    value, gain/loss (when cost_basis is set). Inline add/edit/delete.
+    funds/bonds/insurance policies/cash/CPF), plus a separate SRS-vs-
+    brokerage breakdown within invested holdings (an SRS-held ETF counts
+    toward both its asset-type slice and the SRS total — these are two
+    different cuts of the same holdings, not mutually exclusive
+    categories).
+  - Holdings table: type, account (brokerage/SRS), ticker/name, quantity,
+    current price, market value, gain/loss (when cost_basis is set).
+    Inline add/edit/delete.
   - Cash list: label, amount, inline add/edit/delete.
   - CPF section: two fields, OA and SA balances, edited in place (no
     add/delete — see Data Model notes).
@@ -174,7 +200,8 @@ positive; cash and CPF (OA/SA) amounts must be numeric and non-negative
 (zero is valid, negative is not); and ticker vs. manual_value requirements
 for holdings depend on type and resolution:
 - `stock`/`etf`: ticker required (resolved via FMP symbol search, see Data
-  Model notes); no manual_value.
+  Model notes); no manual_value; `account` optional, defaults to
+  `brokerage` (set to `srs` for SRS-held ETFs).
 - `bond`: manual_value required; no ticker.
 - `mutual_fund`: ticker required (resolved via FMP symbol search, same as
   stock/etf). If the FMP plan lacks mutual fund access, manual_value is
@@ -184,6 +211,10 @@ for holdings depend on type and resolution:
   Model notes). If `HOME_CURRENCY` isn't `USD`, OR the FMP plan lacks
   crypto quote access, manual_value is also required as the fallback
   value, and the UI should prompt for it in that case.
+- `insurance_policy`: manual_value required; no ticker; quantity is fixed
+  at `1` server-side (not user-editable); cost_basis strongly recommended
+  (UI should prompt for it) but not hard-required, consistent with other
+  types where cost_basis is optional.
 
 ## Data Flow — Pricing
 
@@ -217,8 +248,9 @@ On dashboard load, each holding is classified as either **live-priced** or
    fresh quotes from FMP (appending the `USD` pair suffix for crypto
    requests only, per Data Model notes) and update the cache. Staleness
    window is 5 minutes for stock/etf/crypto, 24 hours for mutual_fund.
-3. Manual holdings — bonds always, plus any crypto/mutual_fund holding that
-   didn't qualify as live-priced above — skip step 2 entirely.
+3. Manual holdings — bonds and insurance_policy holdings always, plus any
+   crypto/mutual_fund holding that didn't qualify as live-priced above —
+   skip step 2 entirely.
 4. Compute market value per holding: `quantity * price` for live-priced
    holdings; `manual_value` directly (as the holding's total current value,
    not multiplied by quantity) for manual holdings. Aggregate into totals
@@ -240,10 +272,15 @@ Manual verification after build (via the `run` skill / local dev server,
 then again after Vercel deploy):
 - Log in with the shared password; confirm unauthenticated requests to `/`
   redirect to `/login`.
-- Add one holding of each type (stock, ETF, crypto, mutual fund, bond), one
-  cash entry, and set OA/SA CPF balances; confirm correct live prices,
-  market values, and totals, and that CPF appears as its own line (not
-  folded into cash).
+- Add one holding of each type (stock, ETF, crypto, mutual fund, bond,
+  insurance policy), one cash entry, and set OA/SA CPF balances; confirm
+  correct live prices, market values, and totals, and that CPF appears as
+  its own line (not folded into cash).
+- Add an ETF holding with `account=srs`; confirm it's live-priced
+  identically to a brokerage-held ETF with the same ticker, but is broken
+  out separately in the SRS total.
+- Add an insurance policy with a manual_value and cost_basis; confirm
+  gain/loss displays correctly and quantity is fixed at 1.
 - Confirm price cache staleness/refresh behavior (manual refresh and
   automatic re-fetch after 5 minutes).
 - Confirm graceful handling of an invalid ticker.
@@ -265,3 +302,9 @@ then again after Vercel deploy):
 - Transaction history / tax lot tracking beyond a single cost_basis figure.
 - CPF Medisave (MA) and Retirement Account (RA) — only OA and SA are
   tracked in v1, per the user's request.
+- SRS contribution room/cap tracking (the annual contribution limit) —
+  v1 only tracks the current value of SRS-held ETFs, not how much
+  contribution room remains.
+- Insurance policy projections — guaranteed vs. non-guaranteed maturity
+  value breakdowns, projected future value, or premium payment schedules.
+  v1 only tracks current surrender value and premiums paid to date.
