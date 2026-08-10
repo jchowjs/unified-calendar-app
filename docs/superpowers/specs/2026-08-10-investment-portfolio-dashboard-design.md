@@ -139,9 +139,9 @@ type and resolution:
   also required as the fallback value, and the UI should prompt for it in
   that case.
 - `crypto`: ticker required (bare symbol, validated as described in Data
-  Model notes). If `HOME_CURRENCY` isn't `USD`, manual_value is also
-  required as the fallback value, and the UI should prompt for it in that
-  case.
+  Model notes). If `HOME_CURRENCY` isn't `USD`, OR the FMP plan lacks
+  crypto quote access, manual_value is also required as the fallback
+  value, and the UI should prompt for it in that case.
 
 ## Data Flow — Pricing
 
@@ -154,9 +154,9 @@ different symbol formats and update cadences — they are not one uniform
   types and `addHolding` stores the bare asset symbol (e.g. `BTC`); the
   `USD` suffix is appended only when constructing the FMP request at fetch
   time (step 2 below), never stored. This only resolves to a live price
-  when `HOME_CURRENCY=USD` (consistent with the home-currency-only
-  constraint above) — for any other home currency, crypto holdings use
-  `manual_value` instead, same as bonds.
+  when `HOME_CURRENCY=USD` AND the FMP plan includes crypto quote access
+  (consistent with the home-currency-only constraint above) — otherwise
+  crypto holdings use `manual_value` instead, same as bonds.
 - **Mutual funds**: NAV updates once per trading day (not intraday), so
   these are refreshed on a daily-staleness check rather than the 5-minute
   window below — no point re-fetching a value that hasn't changed.
@@ -169,7 +169,8 @@ On dashboard load, each holding is classified as either **live-priced** or
 `manual_value` is set — see Server Actions):
 1. Read all holdings from Postgres.
 2. For live-priced holdings — `stock`/`etf` always; `crypto` only when
-   `HOME_CURRENCY=USD`; `mutual_fund` only when the FMP plan supports it —
+   `HOME_CURRENCY=USD` and the FMP plan supports it; `mutual_fund` only
+   when the FMP plan supports it —
    check `price_cache` for each distinct (type, ticker). If stale, fetch
    fresh quotes from FMP (appending the `USD` pair suffix for crypto
    requests only, per Data Model notes) and update the cache. Staleness
