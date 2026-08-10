@@ -15,9 +15,15 @@ This is a single-user personal finance tool, not a multi-tenant product.
 - Hosted on Vercel so the user can reach it from their phone anywhere (not
   limited to a local network).
 - Protected by a single shared password. Entering the correct password sets a
-  signed session cookie; Next.js middleware checks this cookie on every
-  request and redirects unauthenticated requests to `/login`. No user
-  accounts/signup — this app has exactly one user.
+  signed session cookie (30-day expiry); Next.js middleware checks this
+  cookie on every request and redirects unauthenticated requests to
+  `/login`. A `logout` Server Action clears the cookie and redirects back to
+  `/login`. No user accounts/signup — this app has exactly one user.
+- The password is stored as a bcrypt hash in an env var; the login action
+  compares the submitted password against it. Given this is a personal,
+  low-traffic app, v1 accepts brute-force risk as-is rather than adding
+  rate-limiting/lockout — noted here explicitly as a conscious tradeoff, not
+  an oversight.
 - All secrets (FMP API key, password hash, cookie signing secret) are stored
   as Vercel environment variables, never committed to the repo.
 
@@ -54,19 +60,32 @@ cash_entries
   updated_at    timestamptz
 
 price_cache
-  ticker        text primary key
+  type          enum('stock','etf','crypto','mutual_fund')  -- part of composite key
+  ticker        text                                        -- FMP-canonical symbol
   price         numeric
   fetched_at    timestamptz
+  primary key (type, ticker)
 ```
 
 Notes:
-- Single home currency for the whole app (no per-entry currency/FX
-  conversion) — all cash entries and displayed totals are in one currency
-  the user chooses once.
+- Single home currency for the whole app, set once as a constant/env var
+  (e.g. `HOME_CURRENCY=USD`) — not a database-backed setting, since it's
+  fixed for the app's lifetime. **Constraint: v1 only supports holdings
+  that are listed/traded in the home currency.** FMP returns quotes in each
+  security's native listing currency (e.g. a HK-listed stock in HKD), and
+  since FX conversion is explicitly out of scope, mixing listing currencies
+  would silently produce wrong totals. The add-holding form should
+  make this constraint visible to the user (e.g. a note or a currency
+  field defaulted to and locked at the home currency).
+- `price_cache` is keyed on `(type, ticker)` using FMP's canonical symbol
+  for that type (not necessarily what the user typed) to avoid collisions
+  between differently-typed instruments that share a raw symbol string.
 - Bonds are the one holding type without live pricing: individual bonds
   don't have a simple ticker/live-price API via FMP, so bond holdings store
   a `manual_value` the user updates themselves. Bond *ETFs* are just regular
   ETFs (ticker + live price) and are unaffected by this.
+- No migration framework — a single SQL init script (run once against the
+  Vercel Postgres instance) is sufficient at this scale.
 
 ## Pages & Components
 
@@ -89,6 +108,7 @@ itself.
 
 ## Server Actions
 
+- `login`, `logout`
 - `addHolding`, `updateHolding`, `deleteHolding`
 - `addCash`, `updateCash`, `deleteCash`
 - `refreshPrices`
@@ -98,12 +118,27 @@ ticker is required for non-bond types, amounts must be numeric.
 
 ## Data Flow — Pricing
 
+Stocks, ETFs, crypto, and mutual funds are different FMP endpoints with
+different symbol formats and update cadences — they are not one uniform
+"batch fetch":
+- **Stocks/ETFs**: FMP quote endpoint, standard ticker (e.g. `AAPL`).
+- **Crypto**: FMP quote endpoint with a pair suffix (e.g. `BTCUSD`), not
+  the bare asset symbol.
+- **Mutual funds**: NAV updates once per trading day (not intraday), so
+  these are refreshed on a daily-staleness check rather than the 5-minute
+  window below — no point re-fetching a value that hasn't changed.
+- Implementation must confirm the FMP plan/tier in use actually includes
+  crypto and mutual fund quote access before relying on it; if it doesn't,
+  those two types fall back to `manual_value` like bonds until upgraded.
+
 On dashboard load:
 1. Read all holdings from Postgres.
-2. For each distinct ticker among stock/etf/crypto/mutual_fund holdings,
-   check `price_cache`. If the cached price is stale (older than 5 minutes),
-   batch-fetch fresh quotes from FMP and update the cache.
-3. Bonds skip this entirely and use `manual_value` directly.
+2. For each distinct (type, ticker) among stock/etf/crypto holdings, check
+   `price_cache`. If stale (older than 5 minutes), fetch fresh quotes from
+   FMP and update the cache. Mutual fund holdings use the same cache keyed
+   by `(mutual_fund, ticker)` but with a 24-hour staleness window instead.
+3. Bonds (and any type without confirmed FMP plan support) skip this
+   entirely and use `manual_value` directly.
 4. Compute market value per holding (`quantity * price`, or `manual_value`
    for bonds) and aggregate totals (net worth, allocation, gain/loss where
    cost_basis is present).
@@ -130,11 +165,15 @@ then again after Vercel deploy):
   automatic re-fetch after 5 minutes).
 - Confirm graceful handling of an invalid ticker.
 - Edit and delete a holding and a cash entry; confirm totals update.
-- Log out (or clear cookie) and confirm redirect back to `/login`.
+- Log out via the `logout` action and confirm the cookie is cleared and
+  `/` redirects back to `/login`.
+- Confirm mutual fund prices refresh on a daily cadence rather than every
+  5 minutes.
 
 ## Out of Scope (v1)
 
-- Multi-currency / FX conversion.
+- Multi-currency / FX conversion — as a consequence, v1 only supports
+  holdings listed in the app's single home currency (see Data Model notes).
 - Multi-user accounts or sharing.
 - Historical performance charts / snapshots over time.
 - Automatic position sync from a broker (e.g. IBKR) — holdings are entered
