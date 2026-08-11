@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+@layer components {
+  .input {
+    @apply rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-slate-500 focus:outline-none;
+  }
+}
