@@ -32,9 +32,9 @@ const MANUAL_VALUE_HINTS: Record<string, string> = {
 const initialState: ActionState = {};
 
 // Types priced by ticker (via FMP or a manual fallback for the same
-// symbol) — these are the ones the currency-mismatch warning applies to.
-// Bond/insurance_policy/endowus are always manually valued in whatever
-// currency the user enters, so there's no listing-currency mismatch risk.
+// symbol) — these are the ones live prices get FX-converted for.
+// Bond/insurance_policy/endowus are always manually valued directly in
+// the home currency, so there's nothing to convert.
 const PRICED_BY_TICKER = new Set(["stock", "etf", "crypto", "mutual_fund", "gold"]);
 
 export function AddHoldingForm({ homeCurrency }: { homeCurrency: string }) {
@@ -44,16 +44,15 @@ export function AddHoldingForm({ homeCurrency }: { homeCurrency: string }) {
   const showTicker = !NO_TICKER.has(type);
   const showQuantity = !FIXED_QUANTITY_ONE.has(type);
   const showAccount = SRS_ELIGIBLE.has(type);
-  const showCurrencyWarning = PRICED_BY_TICKER.has(type);
+  const showCurrencyNote = PRICED_BY_TICKER.has(type);
 
   return (
     <form action={formAction} className="mt-4 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-4">
-      {showCurrencyWarning && (
-        <p className="w-full text-xs text-amber-700">
-          Only add {type === "crypto" || type === "gold" ? "symbols" : "tickers"} listed/traded in{" "}
-          <strong>{homeCurrency}</strong> — prices are fetched in the security&apos;s native listing
-          currency, and this app doesn&apos;t convert between currencies, so a mismatch will silently
-          produce a wrong value.
+      {showCurrencyNote && (
+        <p className="w-full text-xs text-slate-500">
+          Live prices are fetched in the security&apos;s own listing currency and converted to{" "}
+          <strong>{homeCurrency}</strong> automatically using the current exchange rate. If a manual
+          value is needed instead (fallback), enter it directly in {homeCurrency}.
         </p>
       )}
       <label className="flex flex-col gap-0.5 text-xs text-slate-600">

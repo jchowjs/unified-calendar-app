@@ -7,8 +7,10 @@ investments and cash. The user manually enters what they hold (quantities of
 stocks/ETFs/crypto/mutual funds — including SRS-held ETFs — plus bonds,
 insurance savings policies, physical/savings-account gold, Endowus portfolio
 investments, cash balances, and CPF Ordinary Account/Special Account
-balances); the app fetches live pricing where possible and computes market
-values, gain/loss, allocation, and total net worth.
+balances); the app fetches live pricing where possible, converts prices
+quoted in a different currency to the app's single home currency
+automatically, and computes market values, gain/loss, allocation, and total
+net worth.
 
 This is a single-user personal finance tool, not a multi-tenant product.
 
@@ -51,6 +53,11 @@ holdings
   account       enum('brokerage','srs')   -- default 'brokerage'; see notes
   ticker        text, nullable            -- null for bond/insurance_policy/
                                            -- endowus; fixed constant for gold
+  currency      text, nullable            -- listing currency for live-priced
+                                           -- types (from FMP, or 'USD' for
+                                           -- crypto/gold); home currency for
+                                           -- manual-only types; null means
+                                           -- "no conversion" (see notes)
   name          text
   quantity      numeric                   -- grams for gold; 1 for
                                            -- insurance_policy/endowus (see
@@ -104,18 +111,36 @@ price_cache
   price         numeric
   fetched_at    timestamptz
   primary key (type, ticker)
+
+fx_rates                              -- read-through cache, same shape/
+  from_currency text                  -- staleness pattern as price_cache,
+  to_currency   text                  -- but keyed on a currency pair
+  rate          numeric               -- instead of (type, ticker)
+  fetched_at    timestamptz
+  primary key (from_currency, to_currency)
 ```
 
 Notes:
 - Single home currency for the whole app, set once as a constant/env var
-  (e.g. `HOME_CURRENCY=USD`) — not a database-backed setting, since it's
-  fixed for the app's lifetime. **Constraint: v1 only supports holdings
-  that are listed/traded in the home currency.** FMP returns quotes in each
-  security's native listing currency (e.g. a HK-listed stock in HKD), and
-  since FX conversion is explicitly out of scope, mixing listing currencies
-  would silently produce wrong totals. The add-holding form should
-  make this constraint visible to the user (e.g. a note or a currency
-  field defaulted to and locked at the home currency).
+  (e.g. `HOME_CURRENCY=SGD`) — not a database-backed setting, since it's
+  fixed for the app's lifetime. FMP returns quotes in each security's
+  native listing currency (e.g. a HK-listed stock in HKD); rather than
+  restricting holdings to the home currency, `holdings.currency` captures
+  the listing currency at add-time and the live-pricing path converts to
+  the home currency automatically via `fx_rates` (see Data Flow). This was
+  widened from an earlier version of this spec that excluded FX conversion
+  entirely and required all holdings to already be in the home currency —
+  live testing showed that constraint was too easy to violate silently
+  (adding a USD stock under an SGD deployment produced a technically-live
+  but mislabeled value) and too restrictive (it also forced crypto/gold,
+  which FMP always quotes in USD, to require `HOME_CURRENCY=USD` with no
+  other option). **Manual entries are the one exception**: whenever a
+  value is typed in by hand — always for bond/insurance_policy/endowus,
+  or as a fallback for any live-priced type FMP can't quote — it's assumed
+  to already be in the home currency and is never converted, by the user's
+  explicit choice (simpler than adding a currency field to manual entry;
+  the user looks up the value themselves anyway and can convert mentally
+  or just check a SGD-denominated source).
 - `price_cache` is keyed on `(type, ticker)`, and `holdings.ticker` always
   already matches that canonical form — canonicalization happens once, at
   add-time, so no translation step is needed at fetch time. The mechanism
@@ -172,16 +197,13 @@ Notes:
   unit selector). Unlike bond/insurance_policy/endowus, gold attempts live
   pricing the same way crypto does: `ticker` is fixed internally to the
   constant `XAUUSD` (not user-entered) and used as the `price_cache` key
-  when live-priced. This only resolves to a live price when
-  `HOME_CURRENCY=USD` AND the FMP plan includes commodity/spot gold quote
-  access (identical condition shape to crypto, and for the same
-  currency-mismatch reason — FMP quotes gold in USD per troy ounce) —
-  otherwise gold falls back to `manual_value` (the holding's total current
-  value, entered by the user from a spot price they look up themselves),
-  same as bonds. Given this deployment requires `HOME_CURRENCY=SGD` (see
-  CPF note below), gold will in practice always use `manual_value` here,
-  same as crypto — this is expected, not a bug. See Data Flow for the
-  live-price gram/troy-ounce conversion.
+  when live-priced; `currency` is always `USD` (FMP quotes gold in USD per
+  troy ounce), converted to the home currency same as any other live
+  price. This resolves to a live price whenever the FMP plan includes
+  commodity/spot gold quote access — otherwise gold falls back to
+  `manual_value` (a price **per gram**, multiplied by `quantity`, entered
+  directly in the home currency), same as bonds. See Data Flow for the
+  live-price gram/troy-ounce conversion and the FX conversion step.
 - No migration framework — a single SQL init script (run once against the
   Vercel Postgres instance) is sufficient at this scale.
 - CPF (Singapore Central Provident Fund) OA/SA balances are tracked
@@ -194,19 +216,15 @@ Notes:
   request — Medisave (MA) and Retirement Account (RA) are out of scope but
   would be a straightforward two-column addition to this same table later
   if needed.
-- CPF balances are always SGD-denominated (not user-selectable), unlike
-  holdings/cash which the user chooses to enter in the home currency.
-  **This deployment therefore requires `HOME_CURRENCY=SGD`** for the CPF
-  section to be summed correctly into net worth/allocation — the same
-  silent-wrong-totals risk called out above for mismatched holding
-  currencies applies here, except the user can't simply avoid entering
-  CPF the way they can avoid entering a foreign-currency holding. If a
-  future deployment ever used a non-SGD home currency, the CPF section
-  would need to be hidden/disabled rather than summed in as-is. This
-  interacts with the crypto live-pricing rule below: with
-  `HOME_CURRENCY=SGD`, crypto holdings will always use `manual_value`
-  (that rule requires `HOME_CURRENCY=USD` to live-price) — expected and
-  already handled by that rule, not a new conflict.
+- CPF balances are always SGD-denominated (not user-selectable), and unlike
+  holdings, CPF has no `currency`/conversion mechanism of its own (it's a
+  fixed pair of numbers in `cpf_balances`, not priced through the
+  live/manual pipeline). **This deployment therefore requires
+  `HOME_CURRENCY=SGD`** for the CPF section to be summed correctly into
+  net worth/allocation. If a future deployment ever used a non-SGD home
+  currency, the CPF section would need to be hidden/disabled rather than
+  summed in as-is — this is independent of the FX conversion support
+  described above, which only applies to holdings.
 
 ## Pages & Components
 
@@ -248,26 +266,27 @@ All mutating actions validate input server-side: holding quantity must be
 positive; cash and CPF (OA/SA) amounts must be numeric and non-negative
 (zero is valid, negative is not); and ticker vs. manual_value requirements
 for holdings depend on type and resolution:
-- `stock`/`etf`: ticker required (resolved via FMP symbol search, see Data
-  Model notes). If the FMP plan/exchange coverage can't quote the resolved
-  ticker, manual_value is also required as the fallback value, and the UI
-  should prompt for it in that case — same pattern as `mutual_fund` below
-  (this was widened from an earlier version of this spec that assumed
-  stock/etf would always be quotable; live testing against a real FMP free
-  tier showed non-US exchanges are commonly gated behind a paid plan).
-  `account` optional, defaults to `brokerage` (set to `srs` for SRS-held
-  ETFs).
+- `stock`/`etf`: ticker required (resolved via FMP symbol search, which
+  also supplies `currency` — see Data Model notes). If the FMP plan/
+  exchange coverage can't quote the resolved ticker, manual_value is also
+  required as the fallback value (entered directly in the home currency,
+  not converted), and the UI should prompt for it in that case — same
+  pattern as `mutual_fund` below (this was widened from an earlier version
+  of this spec that assumed stock/etf would always be quotable; live
+  testing against a real FMP free tier showed non-US exchanges are
+  commonly gated behind a paid plan). `account` optional, defaults to
+  `brokerage` (set to `srs` for SRS-held ETFs).
 - `bond`: manual_value required; no ticker; `account` forced to
   `brokerage` server-side (not user-settable — see Data Model notes).
 - `mutual_fund`: ticker required (resolved via FMP symbol search, same as
-  stock/etf). If the FMP plan lacks mutual fund access, manual_value is
-  also required as the fallback value, and the UI should prompt for it in
-  that case. `account` optional, defaults to `brokerage` (set to `srs` for
-  SRS-held unit trusts).
+  stock/etf, including `currency`). If the FMP plan lacks mutual fund
+  access, manual_value is also required as the fallback value, and the UI
+  should prompt for it in that case. `account` optional, defaults to
+  `brokerage` (set to `srs` for SRS-held unit trusts).
 - `crypto`: ticker required (bare symbol, validated as described in Data
-  Model notes). If `HOME_CURRENCY` isn't `USD`, OR the FMP plan lacks
-  crypto quote access, manual_value is also required as the fallback
-  value, and the UI should prompt for it in that case. `account` forced to
+  Model notes); `currency` always `USD`. If the FMP plan lacks crypto
+  quote access, manual_value is also required as the fallback value, and
+  the UI should prompt for it in that case. `account` forced to
   `brokerage` server-side (not user-settable).
 - `insurance_policy`: manual_value required; no ticker; quantity is fixed
   at `1` server-side (not user-editable); `account` forced to `brokerage`
@@ -279,12 +298,12 @@ for holdings depend on type and resolution:
   `brokerage` (set to `srs` for an Endowus SRS portfolio); cost_basis
   strongly recommended (UI should prompt for it) but not hard-required.
 - `gold`: quantity required (grams, positive); ticker not user-set (fixed
-  internally to `XAUUSD`); `account` forced to `brokerage` server-side
-  (not user-settable). If `HOME_CURRENCY` isn't `USD`, OR the FMP plan
-  lacks commodity/gold quote access, manual_value is also required as the
+  internally to `XAUUSD`); `currency` always `USD`; `account` forced to
+  `brokerage` server-side (not user-settable). If the FMP plan lacks
+  commodity/gold quote access, manual_value is also required as the
   fallback value — a price **per gram**, multiplied by `quantity` to get
-  the total (see Data Model notes) — and the UI should prompt for it in
-  that case.
+  the total, entered directly in the home currency (see Data Model notes)
+  — and the UI should prompt for it in that case.
 
 ## Data Flow — Pricing
 
@@ -296,19 +315,19 @@ uniform "batch fetch":
   the bare asset symbol. FMP crypto pairs are quoted against USD. The user
   types and `addHolding` stores the bare asset symbol (e.g. `BTC`); the
   `USD` suffix is appended only when constructing the FMP request at fetch
-  time (step 2 below), never stored. This only resolves to a live price
-  when `HOME_CURRENCY=USD` AND the FMP plan includes crypto quote access
-  (consistent with the home-currency-only constraint above) — otherwise
-  crypto holdings use `manual_value` instead, same as bonds.
+  time (step 2 below), never stored. Always attempted regardless of home
+  currency — the resulting USD value is converted like any other
+  non-home-currency quote (see FX conversion below) — otherwise (FMP plan
+  lacks crypto access) crypto holdings use `manual_value` instead, same as
+  bonds.
 - **Mutual funds**: NAV updates once per trading day (not intraday), so
   these are refreshed on a daily-staleness check rather than the 5-minute
   window below — no point re-fetching a value that hasn't changed.
 - **Gold**: FMP commodity/spot price endpoint, fixed symbol `XAUUSD`,
-  quoted in USD per troy ounce. Live market value is
-  `(quantity_grams / 31.1034768) * price_per_troy_oz` — same
-  `HOME_CURRENCY=USD`-required condition as crypto, and for the same
-  reason (the quote is USD-denominated). Otherwise gold uses `manual_value`
-  instead, same as bonds.
+  quoted in USD per troy ounce. Native-currency market value is
+  `(quantity_grams / 31.1034768) * price_per_troy_oz`, then converted from
+  USD like any other holding. Otherwise (FMP plan lacks commodity access)
+  gold uses `manual_value` instead, same as bonds.
 - Implementation must confirm the FMP plan/tier in use actually includes
   quote access for the specific tickers/exchanges, asset classes (crypto,
   mutual fund, commodity/gold), before relying on it; if it doesn't, those
@@ -318,29 +337,40 @@ uniform "batch fetch":
   couldn't quote an SGX-listed one, which is what motivated extending the
   manual_value fallback to stock/etf too, not just crypto/mutual_fund/gold).
 
+**FX conversion**: after computing a live-priced holding's value in its own
+listing currency (`holdings.currency`), if that currency differs from
+`HOME_CURRENCY`, the value is multiplied by an exchange rate fetched from
+FMP's forex quote endpoint (symbol e.g. `USDSGD`) and cached in `fx_rates`
+— same read-through pattern, staleness, and manual-refresh support as
+`price_cache`, just keyed by currency pair instead of (type, ticker). If no
+conversion is needed (`currency` is null or equals `HOME_CURRENCY`), the
+native value is used as-is. Manual entries never go through this step —
+they're defined to already be in the home currency (see Data Model notes).
+
 On dashboard load, each holding is classified as either **live-priced** or
 **manual** (this classification is fixed at add-time by whether
 `manual_value` is set — see Server Actions):
 1. Read all holdings from Postgres.
-2. For live-priced holdings — `stock`/`etf`/`mutual_fund` when FMP could
-   quote the ticker at add-time; `crypto`/`gold` only when
-   `HOME_CURRENCY=USD` and the FMP plan supports that type —
-   check `price_cache` for each distinct (type, ticker). If stale, fetch
-   fresh quotes from FMP (appending the `USD` pair suffix for crypto
-   requests only, per Data Model notes) and update the cache. Staleness
-   window is 5 minutes for stock/etf/crypto/gold, 24 hours for
-   mutual_fund.
+2. For live-priced holdings — every `stock`/`etf`/`crypto`/`mutual_fund`/
+   `gold` holding where FMP could quote the ticker at add-time — check
+   `price_cache` for each distinct (type, ticker). If stale, fetch fresh
+   quotes from FMP (appending the `USD` pair suffix for crypto requests
+   only, per Data Model notes) and update the cache. Staleness window is 5
+   minutes for stock/etf/crypto/gold, 24 hours for mutual_fund. Then apply
+   FX conversion as described above.
 3. Manual holdings — bond, insurance_policy, and endowus holdings always,
    plus any stock/etf/crypto/mutual_fund/gold holding that didn't qualify
    as live-priced above — skip step 2 entirely.
 4. Compute market value per holding: for live-priced holdings, `quantity *
-   price` (or the gram/troy-ounce conversion above for gold); for manual
-   holdings, this splits by type (see Data Model notes) — bond/
-   insurance_policy/endowus use `manual_value` directly as the total;
-   stock/etf/crypto/mutual_fund/gold use `quantity * manual_value` (gold's
-   manual entry is price-per-gram, so no troy-ounce conversion applies
-   here, unlike its live-priced path). Aggregate into totals (net worth,
-   allocation, gain/loss where cost_basis is present).
+   price` (or the gram/troy-ounce conversion above for gold), converted to
+   the home currency; for manual holdings, this splits by type (see Data
+   Model notes) — bond/insurance_policy/endowus use `manual_value` directly
+   as the total; stock/etf/crypto/mutual_fund/gold use `quantity *
+   manual_value` (gold's manual entry is price-per-gram, so no
+   troy-ounce conversion applies here, unlike its live-priced path), with
+   no FX conversion applied to either (manual entries are always already
+   in the home currency). Aggregate into totals (net worth, allocation,
+   gain/loss where cost_basis is present).
 
 ## Error Handling
 
@@ -348,6 +378,12 @@ On dashboard load, each holding is classified as either **live-priced** or
   "price unavailable" — falling back to the last cached price if one
   exists, otherwise showing cost basis or `—`. A single bad ticker never
   breaks the rest of the dashboard.
+- Same fallback shape for FX: if a holding has a live price but the
+  exchange rate can't be fetched fresh, fall back to the last cached rate
+  regardless of its age; only show "unavailable" if no rate has ever been
+  cached for that currency pair. A native-currency price is never shown
+  unconverted — that would silently misrepresent the value, the exact
+  failure mode this design is meant to prevent.
 - Server Actions return inline field-level errors on invalid input (e.g.
   negative quantity, missing ticker) rather than throwing unhandled
   exceptions.
@@ -367,13 +403,22 @@ then again after Vercel deploy):
   out separately in the SRS total. Repeat for an `endowus` holding with
   `account=srs`.
 - Add an insurance policy and an Endowus holding, each with a manual_value
-  and cost_basis; confirm gain/loss displays correctly and quantity is
-  fixed at 1 for both.
-- Add a gold holding with a quantity in grams and manual_value (expected
-  given `HOME_CURRENCY=SGD`); confirm the market value used is
-  manual_value directly, not multiplied by the gram quantity.
+  and cost_basis; confirm gain/loss displays correctly, quantity is fixed
+  at 1 for both, and manual_value is used as the total (not multiplied by
+  quantity) — contrast with the next case.
+- Add a stock/etf/crypto/mutual_fund/gold holding with a manual fallback
+  value (e.g. an unquotable ticker); confirm the value shown is `quantity
+  * manual_value` (per-unit price × quantity), not the flat manual_value —
+  this is the opposite convention from bond/insurance_policy/endowus above,
+  and was the source of a real bug caught in live testing (a 10-share
+  manual entry that wasn't multiplied by 10).
+- Add a holding whose live price is quoted in a different currency than
+  `HOME_CURRENCY` (e.g. a US stock under an SGD deployment); confirm the
+  displayed value is the FX-converted amount, not the raw native-currency
+  number relabeled with the home currency's symbol (the bug this feature
+  replaced). Confirm `fx_rates` gets a cached row for that currency pair.
 - Confirm price cache staleness/refresh behavior (manual refresh and
-  automatic re-fetch after 5 minutes).
+  automatic re-fetch after 5 minutes) for both prices and FX rates.
 - Confirm graceful handling of an invalid ticker.
 - Edit and delete a holding and a cash entry; edit CPF OA/SA balances;
   confirm totals update.
@@ -384,8 +429,13 @@ then again after Vercel deploy):
 
 ## Out of Scope (v1)
 
-- Multi-currency / FX conversion — as a consequence, v1 only supports
-  holdings listed in the app's single home currency (see Data Model notes).
+- FX conversion for manual entries — a manually-entered value is always
+  assumed to already be in the home currency and is never converted, by
+  the user's explicit choice (see Data Model notes). Only live-fetched
+  prices go through FX conversion.
+- Historical/point-in-time FX rates — conversion always uses the current
+  cached rate, not the rate on the date a holding was added or a cost
+  basis was recorded.
 - Multi-user accounts or sharing.
 - Historical performance charts / snapshots over time.
 - Automatic position sync from a broker (e.g. IBKR) — holdings are entered

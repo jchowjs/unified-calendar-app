@@ -22,6 +22,7 @@ export interface ResolvedHolding {
   type: HoldingType;
   account: HoldingAccount;
   ticker: string | null;
+  currency: string | null;
   name: string;
   quantity: number;
   costBasis: number | null;
@@ -78,6 +79,9 @@ export async function resolveHoldingInput(
           type: input.type,
           account,
           ticker: null,
+          // Manual entries are always keyed in directly, in the home
+          // currency — never converted (see design doc).
+          currency: homeCurrency,
           name: (input.name ?? "").trim() || defaultName(input.type),
           quantity,
           costBasis,
@@ -92,7 +96,7 @@ export async function resolveHoldingInput(
       const quantity = parsePositiveNumber(input.quantity, "Quantity");
       if (typeof quantity === "object") return { ok: false, error: quantity.error };
 
-      const resolved = await canonicalizeViaSymbolSearch(input.ticker ?? "");
+      const resolved = await canonicalizeViaSymbolSearch(input.ticker ?? "", homeCurrency);
       if (resolved.status === "not_found") {
         return { ok: false, error: "Ticker not found." };
       }
@@ -127,6 +131,7 @@ export async function resolveHoldingInput(
           type: input.type,
           account,
           ticker: resolved.ticker,
+          currency: resolved.currency,
           name: (input.name ?? "").trim() || resolved.name,
           quantity,
           costBasis,
@@ -139,7 +144,7 @@ export async function resolveHoldingInput(
       const quantity = parsePositiveNumber(input.quantity, "Quantity");
       if (typeof quantity === "object") return { ok: false, error: quantity.error };
 
-      const resolved = await canonicalizeCryptoSymbol(input.ticker ?? "", homeCurrency);
+      const resolved = await canonicalizeCryptoSymbol(input.ticker ?? "");
       if (!resolved) {
         return { ok: false, error: "Enter a valid crypto symbol (letters/numbers only)." };
       }
@@ -149,9 +154,7 @@ export async function resolveHoldingInput(
         return {
           ok: false,
           error:
-            homeCurrency === "USD"
-              ? "Couldn't fetch a live price for this symbol — enter its current value manually to continue."
-              : "This deployment's home currency isn't USD, so crypto can't be live-priced — enter its current value manually.",
+            "Couldn't fetch a live price for this symbol — enter its current value manually to continue.",
         };
       }
 
@@ -161,6 +164,7 @@ export async function resolveHoldingInput(
           type: "crypto",
           account: "brokerage",
           ticker: resolved.ticker,
+          currency: resolved.currency,
           name: (input.name ?? "").trim() || resolved.name,
           quantity,
           costBasis,
@@ -174,17 +178,11 @@ export async function resolveHoldingInput(
       if (typeof quantity === "object") return { ok: false, error: quantity.error };
 
       const manualValue = manualValueInput;
-      let liveQuoteConfirmed = false;
-      if (homeCurrency === "USD") {
-        liveQuoteConfirmed = (await fetchQuotePrice(GOLD_TICKER)) !== null;
-      }
+      const liveQuoteConfirmed = (await fetchQuotePrice(GOLD_TICKER)) !== null;
       if (!liveQuoteConfirmed && manualValue === null) {
         return {
           ok: false,
-          error:
-            homeCurrency === "USD"
-              ? "Couldn't fetch a live gold price — enter its current value manually to continue."
-              : "This deployment's home currency isn't USD, so gold can't be live-priced — enter its current value manually.",
+          error: "Couldn't fetch a live gold price — enter its current value manually to continue.",
         };
       }
 
@@ -194,6 +192,7 @@ export async function resolveHoldingInput(
           type: "gold",
           account: "brokerage",
           ticker: GOLD_TICKER,
+          currency: "USD",
           name: (input.name ?? "").trim() || "Gold",
           quantity,
           costBasis,

@@ -7,6 +7,7 @@ export interface HoldingRow {
   type: HoldingType;
   account: HoldingAccount;
   ticker: string | null;
+  currency: string | null;
   name: string;
   quantity: string;
   cost_basis: string | null;
@@ -17,7 +18,7 @@ export interface HoldingRow {
 
 export async function listHoldings(): Promise<HoldingRow[]> {
   const { rows } = await query<HoldingRow>(
-    `select id, type, account, ticker, name, quantity, cost_basis, manual_value, created_at, updated_at
+    `select id, type, account, ticker, currency, name, quantity, cost_basis, manual_value, created_at, updated_at
      from holdings order by created_at asc`
   );
   return rows;
@@ -25,9 +26,18 @@ export async function listHoldings(): Promise<HoldingRow[]> {
 
 export async function insertHolding(data: ResolvedHolding): Promise<void> {
   await query(
-    `insert into holdings (type, account, ticker, name, quantity, cost_basis, manual_value)
-     values ($1, $2, $3, $4, $5, $6, $7)`,
-    [data.type, data.account, data.ticker, data.name, data.quantity, data.costBasis, data.manualValue]
+    `insert into holdings (type, account, ticker, currency, name, quantity, cost_basis, manual_value)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [
+      data.type,
+      data.account,
+      data.ticker,
+      data.currency,
+      data.name,
+      data.quantity,
+      data.costBasis,
+      data.manualValue,
+    ]
   );
 }
 

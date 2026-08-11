@@ -11,12 +11,12 @@ import {
 
 type CacheableType = "stock" | "etf" | "crypto" | "mutual_fund" | "gold";
 
-interface CachedPrice {
+interface CachedRate {
   price: number;
   fetchedAt: Date;
 }
 
-async function getCachedPrice(type: CacheableType, ticker: string): Promise<CachedPrice | null> {
+async function getCachedPrice(type: CacheableType, ticker: string): Promise<CachedRate | null> {
   const { rows } = await query<{ price: string; fetched_at: Date }>(
     `select price, fetched_at from price_cache where type = $1 and ticker = $2`,
     [type, ticker]
@@ -45,12 +45,8 @@ function fmpQuerySymbol(type: CacheableType, ticker: string): string {
 // updates the cache. Returns null (never throws) when FMP has no price
 // for this symbol right now — callers fall back to the last cached price
 // or "unavailable" (see computeMarketValue).
-async function getLivePrice(
-  type: CacheableType,
-  ticker: string,
-  homeCurrency: string
-): Promise<number | null> {
-  if (!canAttemptLivePrice(type as HoldingType, homeCurrency)) return null;
+async function getLivePrice(type: CacheableType, ticker: string): Promise<number | null> {
+  if (!canAttemptLivePrice(type as HoldingType)) return null;
 
   const cached = await getCachedPrice(type, ticker);
   if (cached && Date.now() - cached.fetchedAt.getTime() < stalenessMsFor(type as HoldingType)) {
@@ -75,9 +71,72 @@ export async function forceRefreshPrice(
   return price;
 }
 
+const FX_STALENESS_MS = 5 * 60 * 1000;
+
+async function getCachedFxRate(from: string, to: string): Promise<CachedRate | null> {
+  const { rows } = await query<{ rate: string; fetched_at: Date }>(
+    `select rate, fetched_at from fx_rates where from_currency = $1 and to_currency = $2`,
+    [from, to]
+  );
+  const row = rows[0];
+  return row ? { price: Number(row.rate), fetchedAt: row.fetched_at } : null;
+}
+
+async function upsertCachedFxRate(from: string, to: string, rate: number) {
+  await query(
+    `insert into fx_rates (from_currency, to_currency, rate, fetched_at)
+     values ($1, $2, $3, now())
+     on conflict (from_currency, to_currency) do update set rate = excluded.rate, fetched_at = now()`,
+    [from, to, rate]
+  );
+}
+
+// Read-through FX rate, same pattern as getLivePrice. forceRefresh also
+// exists for the manual "Refresh prices" action.
+async function getFxRate(fromCurrency: string, toCurrency: string): Promise<number | null> {
+  const cached = await getCachedFxRate(fromCurrency, toCurrency);
+  if (cached && Date.now() - cached.fetchedAt.getTime() < FX_STALENESS_MS) {
+    return cached.price;
+  }
+
+  const rate = await fetchQuotePrice(`${fromCurrency}${toCurrency}`);
+  if (rate === null) return null;
+
+  await upsertCachedFxRate(fromCurrency, toCurrency, rate);
+  return rate;
+}
+
+export async function forceRefreshFxRate(fromCurrency: string, toCurrency: string): Promise<number | null> {
+  const rate = await fetchQuotePrice(`${fromCurrency}${toCurrency}`);
+  if (rate !== null) await upsertCachedFxRate(fromCurrency, toCurrency, rate);
+  return rate;
+}
+
+// Converts a value already computed in `currency` into `homeCurrency`.
+// `currency === null` means "no conversion" (manual entries — see design
+// doc). If a fresh FX rate can't be fetched, falls back to the last
+// cached rate regardless of age (same graceful-degradation shape as
+// price fallback) rather than losing a value we do have a native-currency
+// number for; returns null only if no rate has ever been cached.
+async function convertToHomeCurrency(
+  nativeValue: number,
+  currency: string | null,
+  homeCurrency: string
+): Promise<number | null> {
+  const from = currency ?? homeCurrency;
+  if (from === homeCurrency) return nativeValue;
+
+  const rate = await getFxRate(from, homeCurrency);
+  if (rate !== null) return nativeValue * rate;
+
+  const stale = await getCachedFxRate(from, homeCurrency);
+  return stale ? nativeValue * stale.price : null;
+}
+
 export interface HoldingForPricing {
   type: HoldingType;
   ticker: string | null;
+  currency: string | null;
   quantity: string | number;
   manual_value: string | number | null;
 }
@@ -89,7 +148,7 @@ export interface HoldingValue {
   status: PriceStatus;
 }
 
-function valueFromPrice(holding: HoldingForPricing, price: number): number {
+function nativeValueFromPrice(holding: HoldingForPricing, price: number): number {
   const quantity = Number(holding.quantity);
   if (holding.type === "gold") {
     return (quantity / TROY_OUNCE_GRAMS) * price;
@@ -112,11 +171,9 @@ export async function computeMarketValue(
       return { value: manualValue, status: "manual" };
     }
     // stock/etf/crypto/mutual_fund/gold manual fallback: manual_value is
-    // a per-unit price (per share/coin/gram) multiplied by quantity —
-    // matching how live pricing works for these same types, so the
-    // mental model doesn't flip depending on whether pricing is live or
-    // manual. (Gold's manual entry is price-per-gram directly, unlike
-    // the live path which converts from FMP's per-troy-ounce quote.)
+    // a per-unit price (per share/coin/gram), always entered directly in
+    // the home currency (see design doc) — no FX conversion applies here,
+    // unlike the live path below.
     return { value: Number(holding.quantity) * manualValue, status: "manual" };
   }
 
@@ -124,16 +181,25 @@ export async function computeMarketValue(
   const ticker = holding.type === "gold" ? GOLD_TICKER : holding.ticker;
   if (!ticker) return { value: null, status: "unavailable" };
 
-  const price = await getLivePrice(type, ticker, homeCurrency);
+  const price = await getLivePrice(type, ticker);
   if (price !== null) {
-    return { value: valueFromPrice(holding, price), status: "live" };
+    const nativeValue = nativeValueFromPrice(holding, price);
+    const converted = await convertToHomeCurrency(nativeValue, holding.currency, homeCurrency);
+    if (converted !== null) return { value: converted, status: "live" };
+    // Have a live price but no FX rate (fresh or cached) to convert it
+    // with — can't safely show a number, so this is unavailable, not a
+    // silently wrong currency.
+    return { value: null, status: "unavailable" };
   }
 
   // FMP unreachable or symbol unquotable right now — fall back to the
   // last cached price if one exists, per Error Handling in the spec.
   const stale = await getCachedPrice(type, ticker);
   if (stale) {
-    return { value: valueFromPrice(holding, stale.price), status: "stale_fallback" };
+    const nativeValue = nativeValueFromPrice(holding, stale.price);
+    const converted = await convertToHomeCurrency(nativeValue, holding.currency, homeCurrency);
+    if (converted !== null) return { value: converted, status: "stale_fallback" };
+    return { value: null, status: "unavailable" };
   }
 
   return { value: null, status: "unavailable" };

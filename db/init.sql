@@ -16,6 +16,11 @@ create table holdings (
   type          holding_type not null,
   account       holding_account not null default 'brokerage',
   ticker        text,
+  currency      text,           -- listing currency for live-priced types
+                                 -- (from FMP, or 'USD' for crypto/gold);
+                                 -- null means "no conversion" (manual
+                                 -- entries are always already in the home
+                                 -- currency, see design doc)
   name          text not null,
   quantity      numeric not null,
   cost_basis    numeric,
@@ -50,4 +55,12 @@ create table price_cache (
   price         numeric not null,
   fetched_at    timestamptz not null default now(),
   primary key (type, ticker)
+);
+
+create table fx_rates (
+  from_currency text not null,
+  to_currency   text not null,
+  rate          numeric not null,
+  fetched_at    timestamptz not null default now(),
+  primary key (from_currency, to_currency)
 );

@@ -36,7 +36,13 @@ export async function loadDashboardData(homeCurrency: string): Promise<Dashboard
   const holdings: HoldingWithValue[] = await Promise.all(
     holdingRows.map(async (h) => {
       const { value, status } = await computeMarketValue(
-        { type: h.type, ticker: h.ticker, quantity: h.quantity, manual_value: h.manual_value },
+        {
+          type: h.type,
+          ticker: h.ticker,
+          currency: h.currency,
+          quantity: h.quantity,
+          manual_value: h.manual_value,
+        },
         homeCurrency
       );
       return { ...h, value, status };

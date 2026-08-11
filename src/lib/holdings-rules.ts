@@ -67,13 +67,12 @@ export function isAlwaysManual(type: HoldingType): boolean {
   return ALWAYS_MANUAL_TYPES.includes(type);
 }
 
-// Whether this holding type can even attempt a live price under the
-// current home currency (crypto/gold require HOME_CURRENCY=USD; stock/
-// etf/mutual_fund always attempt). Does not account for a specific FMP
-// plan lacking access to a type — that's handled at fetch time by
-// falling back to manual_value on failure (see lib/pricing.ts).
-export function canAttemptLivePrice(type: HoldingType, homeCurrency: string): boolean {
-  if (isAlwaysManual(type)) return false;
-  if (type === "crypto" || type === "gold") return homeCurrency === "USD";
-  return true;
+// Whether this holding type ever attempts a live price at all — every
+// LIVE_PRICE_TYPES type does, regardless of its listing currency, since
+// FX conversion (see lib/pricing.ts) bridges any currency to the home
+// currency. Does not account for a specific FMP plan lacking access to a
+// type/ticker — that's handled at fetch time by falling back to
+// manual_value on failure.
+export function canAttemptLivePrice(type: HoldingType): boolean {
+  return !isAlwaysManual(type);
 }
