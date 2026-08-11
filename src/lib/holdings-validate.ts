@@ -97,38 +97,71 @@ export async function resolveHoldingInput(
       const quantity = parsePositiveNumber(input.quantity, "Quantity");
       if (typeof quantity === "object") return { ok: false, error: quantity.error };
 
-      const resolved = await canonicalizeViaSymbolSearch(input.ticker ?? "", homeCurrency);
-      if (resolved.status === "not_found") {
-        return { ok: false, error: "Ticker not found." };
-      }
-      if (resolved.status === "search_unavailable") {
-        return {
-          ok: false,
-          error: "Couldn't verify this ticker right now (lookup failed) — try again shortly.",
-        };
+      const rawTicker = (input.ticker ?? "").trim();
+      if (!rawTicker) {
+        return { ok: false, error: "Ticker is required." };
       }
 
       const manualValue = manualValueInput;
-      if (manualValue === null) {
-        // Best-effort: if FMP can't quote it right now (unlisted symbol,
-        // an exchange/asset class outside the current plan's coverage,
-        // etc.) OR the quote succeeds but the currency can't be converted
-        // to the home currency (e.g. an FMP plan without forex access),
-        // require a manual fallback rather than accepting a holding that
-        // would sit permanently "unavailable" at render time. Applies
-        // uniformly to stock/etf/mutual_fund — there's no way to know in
-        // advance which tickers/currencies a given FMP plan covers.
-        const price = await fetchQuotePrice(resolved.ticker);
-        const fxOk = price !== null && (await canConvertToHomeCurrency(resolved.currency, homeCurrency));
-        if (!fxOk) {
-          return {
-            ok: false,
-            error:
-              price === null
-                ? "Couldn't fetch a live price for this ticker right now — enter its current value manually to continue."
-                : `Got a live price, but couldn't fetch the ${resolved.currency}→${homeCurrency} exchange rate right now — enter its current value manually to continue.`,
-          };
+      const resolved = await canonicalizeViaSymbolSearch(rawTicker, homeCurrency);
+
+      if (resolved.status === "found") {
+        if (manualValue === null) {
+          // Best-effort: if FMP can't quote it right now (unlisted
+          // symbol, an exchange/asset class outside the current plan's
+          // coverage, etc.) OR the quote succeeds but the currency can't
+          // be converted to the home currency (e.g. an FMP plan without
+          // forex access), require a manual fallback rather than
+          // accepting a holding that would sit permanently "unavailable"
+          // at render time. Applies uniformly to stock/etf/mutual_fund —
+          // there's no way to know in advance which tickers/currencies a
+          // given FMP plan covers.
+          const price = await fetchQuotePrice(resolved.ticker);
+          const fxOk = price !== null && (await canConvertToHomeCurrency(resolved.currency, homeCurrency));
+          if (!fxOk) {
+            return {
+              ok: false,
+              error:
+                price === null
+                  ? "Couldn't fetch a live price for this ticker right now — enter its current value manually to continue."
+                  : `Got a live price, but couldn't fetch the ${resolved.currency}→${homeCurrency} exchange rate right now — enter its current value manually to continue.`,
+            };
+          }
         }
+
+        return {
+          ok: true,
+          data: {
+            type: input.type,
+            account,
+            ticker: resolved.ticker,
+            currency: resolved.currency,
+            name: (input.name ?? "").trim() || resolved.name,
+            quantity,
+            costBasis,
+            manualValue,
+          },
+        };
+      }
+
+      // FMP couldn't resolve this ticker at all — either a genuine
+      // zero-result search, or the search call itself failed. Common for
+      // funds FMP simply doesn't cover (e.g. Singapore-distributed unit
+      // trusts, which are usually identified by ISIN/fund-house codes
+      // FMP's US-centric search doesn't index) — rather than hard
+      // rejecting, offer the same manual-entry escape hatch as
+      // bond/insurance_policy, storing whatever the user typed as a
+      // plain label rather than a canonical, FMP-verified ticker. This
+      // holding is permanently manual (never attempts live pricing,
+      // since manual_value being set is what fixes that classification).
+      if (manualValue === null) {
+        return {
+          ok: false,
+          error:
+            resolved.status === "not_found"
+              ? "Ticker not found — if this is a fund FMP doesn't cover (common for non-US unit trusts), enter its current value manually to add it anyway."
+              : "Couldn't verify this ticker right now (lookup failed) — try again, or enter its current value manually to add it anyway.",
+        };
       }
 
       return {
@@ -136,9 +169,9 @@ export async function resolveHoldingInput(
         data: {
           type: input.type,
           account,
-          ticker: resolved.ticker,
-          currency: resolved.currency,
-          name: (input.name ?? "").trim() || resolved.name,
+          ticker: rawTicker,
+          currency: homeCurrency,
+          name: (input.name ?? "").trim() || rawTicker,
           quantity,
           costBasis,
           manualValue,

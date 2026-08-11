@@ -147,7 +147,17 @@ Notes:
   differs by type:
   - `stock`/`etf`/`mutual_fund`: `addHolding` looks up the user's input
     against FMP's symbol search and stores the resolved canonical symbol
-    (rejecting the input with a field error if no match is found).
+    when found. If FMP can't resolve it at all (a genuine zero-result
+    search, or the search call itself failing) — common for funds FMP's
+    US-centric coverage doesn't index, e.g. Singapore-distributed unit
+    trusts identified by ISIN/fund-house codes rather than a ticker —
+    manual_value is required instead, and the raw user-typed text is
+    stored as a plain, non-canonical `ticker` label (this holding is then
+    permanently manual; it never attempts live pricing, same as any other
+    holding with `manual_value` set). This is a stricter version of the
+    same "can't resolve it → require manual_value" pattern already used
+    when a resolved ticker's live quote or FX conversion fails (see
+    Server Actions) — here it's the resolution step itself that fails.
   - `crypto`: there is no generic symbol-search lookup. `addHolding`
     uppercases the user's bare asset symbol (e.g. `btc` → `BTC`) and
     validates it against FMP's known crypto symbols; that bare symbol —
@@ -276,22 +286,24 @@ price quote succeeds but whose currency can never be converted (e.g. an
 FMP plan without forex access) would be accepted as "live" and then sit
 permanently "unavailable" at render time with no way to fix it except
 editing in a manual value after the fact.
-- `stock`/`etf`: ticker required (resolved via FMP symbol search, which
-  also supplies `currency` — see Data Model notes). If the price/FX check
-  fails, manual_value is also required as the fallback value (entered
-  directly in the home currency, not converted), and the UI should prompt
-  for it in that case — same pattern as `mutual_fund` below (this was
-  widened from an earlier version of this spec that assumed stock/etf
-  would always be quotable; live testing against a real FMP free tier
-  showed non-US exchanges are commonly gated behind a paid plan).
+- `stock`/`etf`: ticker required (non-empty text). If FMP's symbol search
+  can't resolve it at all (see Data Model notes), OR resolves it but the
+  price/FX check fails, manual_value is also required as the fallback
+  value (entered directly in the home currency, not converted), and the
+  UI should prompt for it in that case — same pattern as `mutual_fund`
+  below (this was widened from an earlier version of this spec that
+  assumed stock/etf would always be quotable; live testing against a real
+  FMP free tier showed non-US exchanges are commonly gated behind a paid
+  plan, and that some funds aren't resolvable via FMP's search at all).
   `account` optional, defaults to `brokerage` (set to `srs` for SRS-held
   ETFs).
 - `bond`: manual_value required; no ticker; `account` forced to
   `brokerage` server-side (not user-settable — see Data Model notes).
-- `mutual_fund`: ticker required (resolved via FMP symbol search, same as
-  stock/etf, including `currency`). If the price/FX check fails,
-  manual_value is also required as the fallback value, and the UI should
-  prompt for it in that case. `account` optional, defaults to `brokerage`
+- `mutual_fund`: ticker required (non-empty text), same resolution and
+  fallback rules as stock/etf — this is the type where the "FMP can't
+  resolve it at all" fallback matters most in practice, since
+  Singapore-distributed unit trusts are commonly outside FMP's coverage
+  (see Data Model notes). `account` optional, defaults to `brokerage`
   (set to `srs` for SRS-held unit trusts).
 - `crypto`: ticker required (bare symbol, validated as described in Data
   Model notes); `currency` always `USD`. If the price/FX check fails,
