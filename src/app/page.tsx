@@ -50,7 +50,7 @@ export default async function DashboardPage() {
       <div>
         <HoldingsTable holdings={data.holdings} currency={currency} />
         <div className="mt-[-1px] rounded-b-lg border border-t-0 border-slate-200 bg-white p-4">
-          <AddHoldingForm />
+          <AddHoldingForm homeCurrency={currency} />
         </div>
       </div>
 

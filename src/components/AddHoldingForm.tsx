@@ -29,7 +29,13 @@ const MANUAL_VALUE_HINTS: Record<string, string> = {
 
 const initialState: ActionState = {};
 
-export function AddHoldingForm() {
+// Types priced by ticker (via FMP or a manual fallback for the same
+// symbol) — these are the ones the currency-mismatch warning applies to.
+// Bond/insurance_policy/endowus are always manually valued in whatever
+// currency the user enters, so there's no listing-currency mismatch risk.
+const PRICED_BY_TICKER = new Set(["stock", "etf", "crypto", "mutual_fund", "gold"]);
+
+export function AddHoldingForm({ homeCurrency }: { homeCurrency: string }) {
   const [type, setType] = useState<(typeof HOLDING_TYPES)[number]>("stock");
   const [state, formAction, pending] = useActionState(addHolding, initialState);
 
@@ -37,9 +43,18 @@ export function AddHoldingForm() {
   const showQuantity = !FIXED_QUANTITY_ONE.has(type);
   const showAccount = SRS_ELIGIBLE.has(type);
   const showManualValue = type !== "stock" && type !== "etf";
+  const showCurrencyWarning = PRICED_BY_TICKER.has(type);
 
   return (
     <form action={formAction} className="mt-4 flex flex-wrap items-end gap-2 border-t border-slate-100 pt-4">
+      {showCurrencyWarning && (
+        <p className="w-full text-xs text-amber-700">
+          Only add {type === "crypto" || type === "gold" ? "symbols" : "tickers"} listed/traded in{" "}
+          <strong>{homeCurrency}</strong> — prices are fetched in the security&apos;s native listing
+          currency, and this app doesn&apos;t convert between currencies, so a mismatch will silently
+          produce a wrong value.
+        </p>
+      )}
       <label className="flex flex-col gap-0.5 text-xs text-slate-600">
         Type
         <select
