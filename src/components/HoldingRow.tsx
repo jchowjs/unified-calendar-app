@@ -15,6 +15,17 @@ const STATUS_LABELS: Record<string, string> = {
 const SRS_ELIGIBLE = new Set(["stock", "etf", "mutual_fund", "endowus"]);
 const FIXED_QUANTITY_ONE = new Set(["insurance_policy", "endowus"]);
 
+const MANUAL_VALUE_LABELS: Record<string, string> = {
+  bond: "Total value",
+  insurance_policy: "Surrender value",
+  endowus: "Portfolio value",
+  crypto: "Price per coin",
+  gold: "Price per gram",
+  mutual_fund: "Price per unit",
+  stock: "Price per share",
+  etf: "Price per share",
+};
+
 const initialState: ActionState = {};
 
 export function HoldingRow({ holding, currency }: { holding: HoldingWithValue; currency: string }) {
@@ -109,7 +120,7 @@ export function HoldingRow({ holding, currency }: { holding: HoldingWithValue; c
               className="input w-28"
             />
           </Field>
-          <Field label="Manual value">
+          <Field label={MANUAL_VALUE_LABELS[holding.type] ?? "Manual value"}>
             <input
               name="manualValue"
               type="number"

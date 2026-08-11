@@ -4,6 +4,7 @@ import {
   GOLD_TICKER,
   TROY_OUNCE_GRAMS,
   canAttemptLivePrice,
+  isAlwaysManual,
   stalenessMsFor,
   type HoldingType,
 } from "./holdings-rules";
@@ -103,7 +104,20 @@ export async function computeMarketValue(
   homeCurrency: string
 ): Promise<HoldingValue> {
   if (holding.manual_value !== null && holding.manual_value !== undefined) {
-    return { value: Number(holding.manual_value), status: "manual" };
+    const manualValue = Number(holding.manual_value);
+    if (isAlwaysManual(holding.type)) {
+      // bond/insurance_policy/endowus: manual_value already is the
+      // holding's total current value (quantity isn't a per-unit price
+      // multiplier for these types).
+      return { value: manualValue, status: "manual" };
+    }
+    // stock/etf/crypto/mutual_fund/gold manual fallback: manual_value is
+    // a per-unit price (per share/coin/gram) multiplied by quantity —
+    // matching how live pricing works for these same types, so the
+    // mental model doesn't flip depending on whether pricing is live or
+    // manual. (Gold's manual entry is price-per-gram directly, unlike
+    // the live path which converts from FMP's per-troy-ounce quote.)
+    return { value: Number(holding.quantity) * manualValue, status: "manual" };
   }
 
   const type = holding.type as CacheableType;

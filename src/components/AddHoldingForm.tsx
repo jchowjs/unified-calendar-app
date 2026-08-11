@@ -19,14 +19,14 @@ const SRS_ELIGIBLE = new Set(["stock", "etf", "mutual_fund", "endowus"]);
 const FIXED_QUANTITY_ONE = new Set(["insurance_policy", "endowus"]);
 const NO_TICKER = new Set(["bond", "insurance_policy", "endowus"]);
 const MANUAL_VALUE_HINTS: Record<string, string> = {
-  bond: "Current value (required)",
+  bond: "Current total value (required)",
   insurance_policy: "Current surrender value (required)",
   endowus: "Current portfolio value (required)",
-  crypto: "Value (required if price can't be fetched live)",
-  gold: "Value (required if price can't be fetched live)",
-  mutual_fund: "Value (required if price can't be fetched live)",
-  stock: "Value (required if price can't be fetched live)",
-  etf: "Value (required if price can't be fetched live)",
+  crypto: "Price per coin (required if price can't be fetched live)",
+  gold: "Price per gram (required if price can't be fetched live)",
+  mutual_fund: "Price per unit (required if price can't be fetched live)",
+  stock: "Price per share (required if price can't be fetched live)",
+  etf: "Price per share (required if price can't be fetched live)",
 };
 
 const initialState: ActionState = {};

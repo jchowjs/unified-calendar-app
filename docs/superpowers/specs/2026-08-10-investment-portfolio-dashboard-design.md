@@ -59,12 +59,23 @@ holdings
                                       -- for most types, but recommended for
                                       -- insurance_policy/endowus (total
                                       -- premiums/amount invested to date)
-  manual_value  numeric, nullable     -- current value when not live-priced:
-                                      -- always for bond/insurance_policy/
-                                      -- endowus; also for stock/etf/crypto/
-                                      -- mutual_fund/gold when FMP support/
-                                      -- currency/exchange coverage doesn't
-                                      -- reach them (see Data Flow)
+  manual_value  numeric, nullable     -- meaning depends on type:
+                                      -- bond/insurance_policy/endowus: the
+                                      -- holding's total current value.
+                                      -- stock/etf/crypto/mutual_fund/gold:
+                                      -- a PER-UNIT price (per share/coin/
+                                      -- gram), multiplied by quantity to
+                                      -- get the total — matching how live
+                                      -- pricing works for the same types,
+                                      -- so entering a value doesn't require
+                                      -- a different mental model than
+                                      -- reading a live quote. Set whenever
+                                      -- not live-priced: always for
+                                      -- bond/insurance_policy/endowus; also
+                                      -- for stock/etf/crypto/mutual_fund/
+                                      -- gold when FMP support/currency/
+                                      -- exchange coverage doesn't reach
+                                      -- them (see Data Flow)
   created_at    timestamptz
   updated_at    timestamptz
 
@@ -271,8 +282,9 @@ for holdings depend on type and resolution:
   internally to `XAUUSD`); `account` forced to `brokerage` server-side
   (not user-settable). If `HOME_CURRENCY` isn't `USD`, OR the FMP plan
   lacks commodity/gold quote access, manual_value is also required as the
-  fallback value (representing the holding's total current value, not a
-  per-gram price), and the UI should prompt for it in that case.
+  fallback value — a price **per gram**, multiplied by `quantity` to get
+  the total (see Data Model notes) — and the UI should prompt for it in
+  that case.
 
 ## Data Flow — Pricing
 
@@ -323,8 +335,11 @@ On dashboard load, each holding is classified as either **live-priced** or
    as live-priced above — skip step 2 entirely.
 4. Compute market value per holding: for live-priced holdings, `quantity *
    price` (or the gram/troy-ounce conversion above for gold); for manual
-   holdings, `manual_value` directly (as the holding's total current
-   value, not multiplied by quantity). Aggregate into totals (net worth,
+   holdings, this splits by type (see Data Model notes) — bond/
+   insurance_policy/endowus use `manual_value` directly as the total;
+   stock/etf/crypto/mutual_fund/gold use `quantity * manual_value` (gold's
+   manual entry is price-per-gram, so no troy-ounce conversion applies
+   here, unlike its live-priced path). Aggregate into totals (net worth,
    allocation, gain/loss where cost_basis is present).
 
 ## Error Handling
