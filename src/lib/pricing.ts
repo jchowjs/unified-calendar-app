@@ -93,7 +93,7 @@ async function upsertCachedFxRate(from: string, to: string, rate: number) {
 
 // Read-through FX rate, same pattern as getLivePrice. forceRefresh also
 // exists for the manual "Refresh prices" action.
-async function getFxRate(fromCurrency: string, toCurrency: string): Promise<number | null> {
+export async function getFxRate(fromCurrency: string, toCurrency: string): Promise<number | null> {
   const cached = await getCachedFxRate(fromCurrency, toCurrency);
   if (cached && Date.now() - cached.fetchedAt.getTime() < FX_STALENESS_MS) {
     return cached.price;
@@ -104,6 +104,20 @@ async function getFxRate(fromCurrency: string, toCurrency: string): Promise<numb
 
   await upsertCachedFxRate(fromCurrency, toCurrency, rate);
   return rate;
+}
+
+// Best-effort add-time check: can this currency actually be converted to
+// the home currency right now? Used alongside the price-quote check to
+// decide whether a manual_value fallback should be required — a holding
+// whose price quote succeeds but whose currency can never be converted
+// (e.g. an FMP plan without forex access) would otherwise get accepted as
+// "live" and then permanently show unavailable at render time.
+export async function canConvertToHomeCurrency(
+  currency: string,
+  homeCurrency: string
+): Promise<boolean> {
+  if (currency === homeCurrency) return true;
+  return (await getFxRate(currency, homeCurrency)) !== null;
 }
 
 export async function forceRefreshFxRate(fromCurrency: string, toCurrency: string): Promise<number | null> {

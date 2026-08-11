@@ -1,5 +1,6 @@
 import { canonicalizeCryptoSymbol, canonicalizeViaSymbolSearch } from "./canonicalize";
 import { fetchQuotePrice } from "./fmp";
+import { canConvertToHomeCurrency } from "./pricing";
 import {
   GOLD_TICKER,
   isFixedQuantityOne,
@@ -111,16 +112,21 @@ export async function resolveHoldingInput(
       if (manualValue === null) {
         // Best-effort: if FMP can't quote it right now (unlisted symbol,
         // an exchange/asset class outside the current plan's coverage,
-        // etc.), require a manual fallback rather than silently leaving
-        // the holding permanently unpriced. Applies uniformly to
-        // stock/etf/mutual_fund — there's no way to know in advance which
-        // tickers a given FMP plan covers.
+        // etc.) OR the quote succeeds but the currency can't be converted
+        // to the home currency (e.g. an FMP plan without forex access),
+        // require a manual fallback rather than accepting a holding that
+        // would sit permanently "unavailable" at render time. Applies
+        // uniformly to stock/etf/mutual_fund — there's no way to know in
+        // advance which tickers/currencies a given FMP plan covers.
         const price = await fetchQuotePrice(resolved.ticker);
-        if (price === null) {
+        const fxOk = price !== null && (await canConvertToHomeCurrency(resolved.currency, homeCurrency));
+        if (!fxOk) {
           return {
             ok: false,
             error:
-              "Couldn't fetch a live price for this ticker right now — enter its current value manually to continue.",
+              price === null
+                ? "Couldn't fetch a live price for this ticker right now — enter its current value manually to continue."
+                : `Got a live price, but couldn't fetch the ${resolved.currency}→${homeCurrency} exchange rate right now — enter its current value manually to continue.`,
           };
         }
       }
@@ -150,12 +156,17 @@ export async function resolveHoldingInput(
       }
 
       const manualValue = manualValueInput;
-      if (!resolved.liveQuoteConfirmed && manualValue === null) {
-        return {
-          ok: false,
-          error:
-            "Couldn't fetch a live price for this symbol — enter its current value manually to continue.",
-        };
+      if (manualValue === null) {
+        const fxOk =
+          resolved.liveQuoteConfirmed && (await canConvertToHomeCurrency(resolved.currency, homeCurrency));
+        if (!fxOk) {
+          return {
+            ok: false,
+            error: !resolved.liveQuoteConfirmed
+              ? "Couldn't fetch a live price for this symbol — enter its current value manually to continue."
+              : `Got a live price, but couldn't fetch the USD→${homeCurrency} exchange rate right now — enter its current value manually to continue.`,
+          };
+        }
       }
 
       return {
@@ -178,12 +189,17 @@ export async function resolveHoldingInput(
       if (typeof quantity === "object") return { ok: false, error: quantity.error };
 
       const manualValue = manualValueInput;
-      const liveQuoteConfirmed = (await fetchQuotePrice(GOLD_TICKER)) !== null;
-      if (!liveQuoteConfirmed && manualValue === null) {
-        return {
-          ok: false,
-          error: "Couldn't fetch a live gold price — enter its current value manually to continue.",
-        };
+      if (manualValue === null) {
+        const liveQuoteConfirmed = (await fetchQuotePrice(GOLD_TICKER)) !== null;
+        const fxOk = liveQuoteConfirmed && (await canConvertToHomeCurrency("USD", homeCurrency));
+        if (!fxOk) {
+          return {
+            ok: false,
+            error: !liveQuoteConfirmed
+              ? "Couldn't fetch a live gold price — enter its current value manually to continue."
+              : `Got a live gold price, but couldn't fetch the USD→${homeCurrency} exchange rate right now — enter its current value manually to continue.`,
+          };
+        }
       }
 
       return {

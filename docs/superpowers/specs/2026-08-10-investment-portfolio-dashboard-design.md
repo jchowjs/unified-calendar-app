@@ -265,29 +265,39 @@ itself.
 All mutating actions validate input server-side: holding quantity must be
 positive; cash and CPF (OA/SA) amounts must be numeric and non-negative
 (zero is valid, negative is not); and ticker vs. manual_value requirements
-for holdings depend on type and resolution:
+for holdings depend on type and resolution. For every ticker-priced type
+below, "the price/quote check" at add-time is really two checks — the
+price quote itself, AND (whenever `currency` differs from `HOME_CURRENCY`)
+that an FX rate can actually be fetched (via `canConvertToHomeCurrency`,
+see Data Flow). Both must succeed for the holding to be accepted without
+manual_value; if either fails, manual_value is required instead. This
+closes a gap found in live testing: without the FX check, a holding whose
+price quote succeeds but whose currency can never be converted (e.g. an
+FMP plan without forex access) would be accepted as "live" and then sit
+permanently "unavailable" at render time with no way to fix it except
+editing in a manual value after the fact.
 - `stock`/`etf`: ticker required (resolved via FMP symbol search, which
-  also supplies `currency` — see Data Model notes). If the FMP plan/
-  exchange coverage can't quote the resolved ticker, manual_value is also
-  required as the fallback value (entered directly in the home currency,
-  not converted), and the UI should prompt for it in that case — same
-  pattern as `mutual_fund` below (this was widened from an earlier version
-  of this spec that assumed stock/etf would always be quotable; live
-  testing against a real FMP free tier showed non-US exchanges are
-  commonly gated behind a paid plan). `account` optional, defaults to
-  `brokerage` (set to `srs` for SRS-held ETFs).
+  also supplies `currency` — see Data Model notes). If the price/FX check
+  fails, manual_value is also required as the fallback value (entered
+  directly in the home currency, not converted), and the UI should prompt
+  for it in that case — same pattern as `mutual_fund` below (this was
+  widened from an earlier version of this spec that assumed stock/etf
+  would always be quotable; live testing against a real FMP free tier
+  showed non-US exchanges are commonly gated behind a paid plan).
+  `account` optional, defaults to `brokerage` (set to `srs` for SRS-held
+  ETFs).
 - `bond`: manual_value required; no ticker; `account` forced to
   `brokerage` server-side (not user-settable — see Data Model notes).
 - `mutual_fund`: ticker required (resolved via FMP symbol search, same as
-  stock/etf, including `currency`). If the FMP plan lacks mutual fund
-  access, manual_value is also required as the fallback value, and the UI
-  should prompt for it in that case. `account` optional, defaults to
-  `brokerage` (set to `srs` for SRS-held unit trusts).
+  stock/etf, including `currency`). If the price/FX check fails,
+  manual_value is also required as the fallback value, and the UI should
+  prompt for it in that case. `account` optional, defaults to `brokerage`
+  (set to `srs` for SRS-held unit trusts).
 - `crypto`: ticker required (bare symbol, validated as described in Data
-  Model notes); `currency` always `USD`. If the FMP plan lacks crypto
-  quote access, manual_value is also required as the fallback value, and
-  the UI should prompt for it in that case. `account` forced to
-  `brokerage` server-side (not user-settable).
+  Model notes); `currency` always `USD`. If the price/FX check fails,
+  manual_value is also required as the fallback value, and the UI should
+  prompt for it in that case. `account` forced to `brokerage` server-side
+  (not user-settable).
 - `insurance_policy`: manual_value required; no ticker; quantity is fixed
   at `1` server-side (not user-editable); `account` forced to `brokerage`
   server-side (not user-settable); cost_basis strongly recommended (UI
@@ -299,11 +309,11 @@ for holdings depend on type and resolution:
   strongly recommended (UI should prompt for it) but not hard-required.
 - `gold`: quantity required (grams, positive); ticker not user-set (fixed
   internally to `XAUUSD`); `currency` always `USD`; `account` forced to
-  `brokerage` server-side (not user-settable). If the FMP plan lacks
-  commodity/gold quote access, manual_value is also required as the
-  fallback value — a price **per gram**, multiplied by `quantity` to get
-  the total, entered directly in the home currency (see Data Model notes)
-  — and the UI should prompt for it in that case.
+  `brokerage` server-side (not user-settable). If the price/FX check
+  fails, manual_value is also required as the fallback value — a price
+  **per gram**, multiplied by `quantity` to get the total, entered
+  directly in the home currency (see Data Model notes) — and the UI
+  should prompt for it in that case.
 
 ## Data Flow — Pricing
 
