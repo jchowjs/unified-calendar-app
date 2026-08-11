@@ -61,9 +61,10 @@ holdings
                                       -- premiums/amount invested to date)
   manual_value  numeric, nullable     -- current value when not live-priced:
                                       -- always for bond/insurance_policy/
-                                      -- endowus; also for crypto/mutual
-                                      -- funds/gold when FMP support/currency
-                                      -- doesn't cover them (see Data Flow)
+                                      -- endowus; also for stock/etf/crypto/
+                                      -- mutual_fund/gold when FMP support/
+                                      -- currency/exchange coverage doesn't
+                                      -- reach them (see Data Flow)
   created_at    timestamptz
   updated_at    timestamptz
 
@@ -237,8 +238,14 @@ positive; cash and CPF (OA/SA) amounts must be numeric and non-negative
 (zero is valid, negative is not); and ticker vs. manual_value requirements
 for holdings depend on type and resolution:
 - `stock`/`etf`: ticker required (resolved via FMP symbol search, see Data
-  Model notes); no manual_value; `account` optional, defaults to
-  `brokerage` (set to `srs` for SRS-held ETFs).
+  Model notes). If the FMP plan/exchange coverage can't quote the resolved
+  ticker, manual_value is also required as the fallback value, and the UI
+  should prompt for it in that case — same pattern as `mutual_fund` below
+  (this was widened from an earlier version of this spec that assumed
+  stock/etf would always be quotable; live testing against a real FMP free
+  tier showed non-US exchanges are commonly gated behind a paid plan).
+  `account` optional, defaults to `brokerage` (set to `srs` for SRS-held
+  ETFs).
 - `bond`: manual_value required; no ticker; `account` forced to
   `brokerage` server-side (not user-settable — see Data Model notes).
 - `mutual_fund`: ticker required (resolved via FMP symbol search, same as
@@ -291,25 +298,29 @@ uniform "batch fetch":
   reason (the quote is USD-denominated). Otherwise gold uses `manual_value`
   instead, same as bonds.
 - Implementation must confirm the FMP plan/tier in use actually includes
-  crypto, mutual fund, and commodity/gold quote access before relying on
-  each; if it doesn't, those types fall back to `manual_value` like bonds
-  until upgraded.
+  quote access for the specific tickers/exchanges, asset classes (crypto,
+  mutual fund, commodity/gold), before relying on it; if it doesn't, those
+  holdings fall back to `manual_value` like bonds until upgraded (or
+  permanently, for tickers/exchanges outside the plan's coverage —
+  confirmed in practice: a free-tier FMP plan quoted a US stock live but
+  couldn't quote an SGX-listed one, which is what motivated extending the
+  manual_value fallback to stock/etf too, not just crypto/mutual_fund/gold).
 
 On dashboard load, each holding is classified as either **live-priced** or
 **manual** (this classification is fixed at add-time by whether
 `manual_value` is set — see Server Actions):
 1. Read all holdings from Postgres.
-2. For live-priced holdings — `stock`/`etf` always; `crypto`/`gold` only
-   when `HOME_CURRENCY=USD` and the FMP plan supports that type;
-   `mutual_fund` only when the FMP plan supports it —
+2. For live-priced holdings — `stock`/`etf`/`mutual_fund` when FMP could
+   quote the ticker at add-time; `crypto`/`gold` only when
+   `HOME_CURRENCY=USD` and the FMP plan supports that type —
    check `price_cache` for each distinct (type, ticker). If stale, fetch
    fresh quotes from FMP (appending the `USD` pair suffix for crypto
    requests only, per Data Model notes) and update the cache. Staleness
    window is 5 minutes for stock/etf/crypto/gold, 24 hours for
    mutual_fund.
 3. Manual holdings — bond, insurance_policy, and endowus holdings always,
-   plus any crypto/mutual_fund/gold holding that didn't qualify as
-   live-priced above — skip step 2 entirely.
+   plus any stock/etf/crypto/mutual_fund/gold holding that didn't qualify
+   as live-priced above — skip step 2 entirely.
 4. Compute market value per holding: for live-priced holdings, `quantity *
    price` (or the gram/troy-ounce conversion above for gold); for manual
    holdings, `manual_value` directly (as the holding's total current

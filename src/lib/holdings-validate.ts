@@ -104,16 +104,19 @@ export async function resolveHoldingInput(
       }
 
       const manualValue = manualValueInput;
-      if (input.type === "mutual_fund" && manualValue === null) {
-        // Best-effort: if FMP can't quote it right now (invalid plan
-        // tier or otherwise), require a manual fallback rather than
-        // silently leaving the holding unpriced.
+      if (manualValue === null) {
+        // Best-effort: if FMP can't quote it right now (unlisted symbol,
+        // an exchange/asset class outside the current plan's coverage,
+        // etc.), require a manual fallback rather than silently leaving
+        // the holding permanently unpriced. Applies uniformly to
+        // stock/etf/mutual_fund — there's no way to know in advance which
+        // tickers a given FMP plan covers.
         const price = await fetchQuotePrice(resolved.ticker);
         if (price === null) {
           return {
             ok: false,
             error:
-              "Couldn't fetch a live price for this fund — enter its current value manually to continue.",
+              "Couldn't fetch a live price for this ticker right now — enter its current value manually to continue.",
           };
         }
       }

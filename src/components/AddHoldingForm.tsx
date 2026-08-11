@@ -25,6 +25,8 @@ const MANUAL_VALUE_HINTS: Record<string, string> = {
   crypto: "Value (required if price can't be fetched live)",
   gold: "Value (required if price can't be fetched live)",
   mutual_fund: "Value (required if price can't be fetched live)",
+  stock: "Value (required if price can't be fetched live)",
+  etf: "Value (required if price can't be fetched live)",
 };
 
 const initialState: ActionState = {};
@@ -42,7 +44,6 @@ export function AddHoldingForm({ homeCurrency }: { homeCurrency: string }) {
   const showTicker = !NO_TICKER.has(type);
   const showQuantity = !FIXED_QUANTITY_ONE.has(type);
   const showAccount = SRS_ELIGIBLE.has(type);
-  const showManualValue = type !== "stock" && type !== "etf";
   const showCurrencyWarning = PRICED_BY_TICKER.has(type);
 
   return (
@@ -95,12 +96,14 @@ export function AddHoldingForm({ homeCurrency }: { homeCurrency: string }) {
         <input name="costBasis" type="number" step="any" className="input w-28" />
       </label>
 
-      {showManualValue && (
-        <label className="flex flex-col gap-0.5 text-xs text-slate-600">
-          {MANUAL_VALUE_HINTS[type] ?? "Value"}
-          <input name="manualValue" type="number" step="any" className="input w-28" />
-        </label>
-      )}
+      {/* Always shown: bond/insurance_policy/endowus always need it,
+          and stock/etf/crypto/mutual_fund/gold need it as a fallback
+          whenever FMP can't quote the resolved ticker (see
+          holdings-validate.ts). */}
+      <label className="flex flex-col gap-0.5 text-xs text-slate-600">
+        {MANUAL_VALUE_HINTS[type] ?? "Value"}
+        <input name="manualValue" type="number" step="any" className="input w-28" />
+      </label>
 
       {showAccount && (
         <label className="flex flex-col gap-0.5 text-xs text-slate-600">
