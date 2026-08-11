@@ -111,13 +111,20 @@ export async function getFxRate(fromCurrency: string, toCurrency: string): Promi
 // decide whether a manual_value fallback should be required — a holding
 // whose price quote succeeds but whose currency can never be converted
 // (e.g. an FMP plan without forex access) would otherwise get accepted as
-// "live" and then permanently show unavailable at render time.
+// "live" and then permanently show unavailable at render time. Mirrors
+// convertToHomeCurrency's stale-cache fallback below: a fresh-fetch
+// failure alone isn't enough to say "can't convert" when a previously
+// cached rate (however old) exists, since render time would still
+// successfully use that stale rate — this check would otherwise be
+// stricter than reality and reject holdings the dashboard can actually
+// display fine.
 export async function canConvertToHomeCurrency(
   currency: string,
   homeCurrency: string
 ): Promise<boolean> {
   if (currency === homeCurrency) return true;
-  return (await getFxRate(currency, homeCurrency)) !== null;
+  if ((await getFxRate(currency, homeCurrency)) !== null) return true;
+  return (await getCachedFxRate(currency, homeCurrency)) !== null;
 }
 
 export async function forceRefreshFxRate(fromCurrency: string, toCurrency: string): Promise<number | null> {
